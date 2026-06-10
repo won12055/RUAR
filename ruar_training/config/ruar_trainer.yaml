@@ -1,0 +1,105 @@
+# the ruar config will override default ppo_trainer.yaml
+
+hydra:
+  searchpath:
+    - file://${oc.env:RUAR_ROOT}/verl/trainer/config
+
+defaults:
+  - ppo_trainer
+  - _self_
+
+data:
+  truncation: right
+  train_batch_size: 8
+  max_prompt_length: 2048
+  max_response_length: 16384
+
+actor_rollout_ref:
+  hybrid_engine: True
+  model:
+    use_remove_padding: True
+  rollout:
+    n: 16
+    tensor_model_parallel_size: 2
+    enforce_eager: True
+    gpu_memory_utilization: 0.30
+    max_model_len: 18432
+    max_num_batched_tokens: 18432
+    max_num_seqs: 8
+  actor:
+    ppo_mini_batch_size: 16
+    ppo_micro_batch_size_per_gpu: 1
+    use_dynamic_bsz: True
+    ppo_max_token_len_per_gpu: 32768
+    ulysses_sequence_parallel_size: 2
+    use_kl_loss: False
+    entropy_coeff: 0.0
+    optim:
+      lr: 2e-6
+      weight_decay: 0.0
+    fsdp_config:
+      param_offload: True
+      optimizer_offload: True
+  ref:
+    log_prob_micro_batch_size_per_gpu: 1
+    log_prob_max_token_len_per_gpu: 32768
+    ulysses_sequence_parallel_size: 2
+    fsdp_config:
+      param_offload: True
+
+reflection:
+  enable: True
+  cue_types: ['wait']
+  # 0 means no cap: use all extracted Wait-start spans until stop_after_ready
+  # stops further answer-forcing probes.
+  max_spans_per_sample: 0
+  max_span_chars: null
+  answer_rollouts: 4
+  max_answer_tokens: 32
+  max_probe_prompt_length: null
+  stop_after_ready: True
+  verify_num_processes: 8
+  temperature: ${actor_rollout_ref.rollout.temperature}
+  top_p: ${actor_rollout_ref.rollout.top_p}
+  top_k: ${actor_rollout_ref.rollout.top_k}
+
+algorithm:
+  adv_estimator: rloo
+  reward_gt_coef: 1
+  length_penalty:
+    enable: True
+    coef: 0.2
+    mode: correct_group_sigmoid
+    std_floor: 0.0
+    only_correct: True
+  advantage_scaling:
+    enable: True
+    only_correct: False
+    ready_threshold: 0.75
+    consecutive_required: 3
+    exclude_final_answer: True
+    post_ready_default_gamma_pos: 0.25
+    post_ready_default_gamma_neg: 1.25
+trainer:
+  project_name: ruar
+  experiment_name: qwen3_8b_50step
+  logger: ['console']
+  total_training_steps: 50
+  n_gpus_per_node: 2
+  save_freq: 50
+  test_freq: -1
+  resume_mode: disable
+  val_before_train: False
+  val_only: False
+  run_final_validation: False
+  validate_sample: False
+  cot_dump:
+    enable: False
+    path: null
+    condition: null
+    every_n_steps: 1
+    max_global_step: null
+    max_samples_per_step: 0
+    max_val_samples_per_step: 0
+    include_prompt: True
+    overwrite: True
