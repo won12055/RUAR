@@ -73,6 +73,8 @@ actor_rollout_ref:
     gpu_memory_utilization: 0.5
     ignore_eos: False
     enforce_eager: False
+    enable_sleep_mode: True
+    initial_sleep: True
     free_cache_engine: False
     load_format: dummy_dtensor
     tensor_model_parallel_size: 2

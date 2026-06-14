@@ -15,7 +15,9 @@
 Single Process Actor
 """
 
+import hashlib
 import itertools
+import json
 import os
 from typing import Iterable, Optional, Tuple
 
@@ -38,6 +40,67 @@ except ImportError:
     pad_input = unpad_input = rearrange = index_first_axis = None
 
 __all__ = ['DataParallelPPOActor']
+
+
+_TRUTHY_ENV = {'1', 'true', 'yes', 'on'}
+
+
+def _debug_update_checksum_enabled(global_step):
+    if os.environ.get('RUAR_DEBUG_UPDATE_CHECKSUM', '').strip().lower() not in _TRUTHY_ENV:
+        return False
+    steps = os.environ.get('RUAR_DEBUG_UPDATE_CHECKSUM_STEPS', '1').strip().lower()
+    if steps in {'*', 'all'}:
+        return True
+    try:
+        enabled_steps = {int(part.strip()) for part in steps.split(',') if part.strip()}
+    except ValueError:
+        enabled_steps = {1}
+    try:
+        return int(global_step) in enabled_steps
+    except (TypeError, ValueError):
+        return False
+
+
+def _tensor_debug_record(tensor):
+    value = tensor.detach().cpu().contiguous()
+    hash_value = value
+    if value.dtype == torch.bfloat16:
+        hash_value = value.float()
+
+    digest = hashlib.sha256()
+    digest.update(str(tuple(value.shape)).encode('utf-8'))
+    digest.update(str(value.dtype).encode('utf-8'))
+    digest.update(hash_value.numpy().tobytes())
+
+    stat_value = value.float()
+    record = {
+        'shape': list(value.shape),
+        'dtype': str(value.dtype),
+        'sha256': digest.hexdigest(),
+    }
+    if stat_value.numel() > 0:
+        record.update({
+            'sum': float(stat_value.sum().item()),
+            'mean': float(stat_value.mean().item()),
+            'min': float(stat_value.min().item()),
+            'max': float(stat_value.max().item()),
+        })
+    return record
+
+
+def _log_update_checksum(phase, global_step, tensors, extra=None):
+    payload = {
+        'event': 'ruar_update_checksum',
+        'phase': phase,
+        'global_step': int(global_step),
+        'rank': os.environ.get('RANK'),
+        'local_rank': os.environ.get('LOCAL_RANK'),
+        'world_size': os.environ.get('WORLD_SIZE'),
+        'tensors': {name: _tensor_debug_record(tensor) for name, tensor in tensors.items()},
+    }
+    if extra:
+        payload.update(extra)
+    print(json.dumps(payload, sort_keys=True), flush=True)
 
 
 class DataParallelPPOActor(BasePPOActor):
@@ -259,6 +322,9 @@ class DataParallelPPOActor(BasePPOActor):
         self.actor_module.train()
 
         temperature = data.meta_info['temperature']  # temperature must be in the data.meta_info to avoid slient error
+        global_step = data.meta_info.get('global_step', -1)
+        debug_update_checksum = _debug_update_checksum_enabled(global_step)
+        debug_update_checksum_logged = False
 
         select_keys = ['responses', 'input_ids', 'attention_mask', 'position_ids', 'old_log_probs', 'advantages']
         if self.config.use_kl_loss:
@@ -325,6 +391,27 @@ class DataParallelPPOActor(BasePPOActor):
                                                                               advantages=advantages,
                                                                               eos_mask=response_mask,
                                                                               clipranges=clip_ratios)
+                if debug_update_checksum and not debug_update_checksum_logged:
+                    _log_update_checksum(
+                        'actor_update_micro_batch',
+                        global_step,
+                        {
+                            'responses': responses,
+                            'attention_mask': attention_mask,
+                            'response_mask': response_mask,
+                            'old_log_prob': old_log_prob,
+                            'advantages': advantages,
+                            'log_prob': log_prob,
+                            'pg_loss': pg_loss.detach().reshape(1),
+                            'pg_clipfrac': pg_clipfrac.detach().reshape(1),
+                            'ppo_kl': ppo_kl.detach().reshape(1),
+                        },
+                        extra={
+                            'batch_idx': int(batch_idx),
+                            'micro_batch_size': int(responses.shape[0]),
+                        },
+                    )
+                    debug_update_checksum_logged = True
                 # compute entropy loss from entropy
                 if compute_entropy:
                     entropy_loss = verl_F.masked_mean(entropy, response_mask)

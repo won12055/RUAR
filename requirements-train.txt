@@ -5,9 +5,11 @@
 # Example PyTorch command depends on your CUDA driver/toolkit, so it is kept in
 # docs/installation.md rather than pinned here.
 #
-# Paper-default training uses USE_REMOVE_PADDING=True. Install a flash-attn
-# build compatible with your PyTorch/CUDA stack, or set USE_REMOVE_PADDING=False
-# before launching training.
+# Paper-default training uses USE_REMOVE_PADDING=True. flash-attn is not pinned
+# here because its wheel/source build must match your Python, PyTorch, and CUDA
+# stack. Install a compatible flash-attn build after PyTorch, verify that
+# `import flash_attn, flash_attn_2_cuda` succeeds, or set
+# USE_REMOVE_PADDING=False before launching a non-paper-default smoke run.
 
 accelerate==1.13.0
 codetiming==1.4.0

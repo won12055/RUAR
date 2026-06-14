@@ -61,8 +61,10 @@ python -m pip install -r requirements-train.txt
 ```
 
 The paper default uses `USE_REMOVE_PADDING=True`, so install a `flash-attn`
-build matching your PyTorch/CUDA stack or set `USE_REMOVE_PADDING=False`. See
-`docs/installation.md` for CUDA, vLLM, Ray, and launch details.
+build matching your Python/PyTorch/CUDA stack and verify
+`import flash_attn, flash_attn_2_cuda`. For a smoke run only, set
+`USE_REMOVE_PADDING=False`. See `docs/installation.md` for CUDA, vLLM, Ray, and
+launch details.
 
 ## Main Hyperparameters
 

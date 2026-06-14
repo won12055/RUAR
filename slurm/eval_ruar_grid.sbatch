@@ -59,8 +59,10 @@ MAX_MODEL_LEN="${MAX_MODEL_LEN:-34816}"
 MAX_NUM_BATCHED_TOKENS="${MAX_NUM_BATCHED_TOKENS:-34816}"
 MAX_NUM_SEQS="${MAX_NUM_SEQS:-4}"
 TOKEN_BUDGET="${TOKEN_BUDGET:-65536}"
+ULYSSES_SEQUENCE_PARALLEL_SIZE="${ULYSSES_SEQUENCE_PARALLEL_SIZE:-1}"
 GPU_MEMORY_UTILIZATION="${GPU_MEMORY_UTILIZATION:-0.60}"
 ENABLE_CHUNKED_PREFILL="${ENABLE_CHUNKED_PREFILL:-True}"
+USE_REMOVE_PADDING="${USE_REMOVE_PADDING:-False}"
 ROLLOUT_TEMPERATURE="${ROLLOUT_TEMPERATURE:-0.0}"
 ROLLOUT_TOP_P="${ROLLOUT_TOP_P:-1.0}"
 ROLLOUT_TOP_K="${ROLLOUT_TOP_K:--1}"
@@ -69,6 +71,7 @@ SKIP_EXISTING="${SKIP_EXISTING:-1}"
 WRITE_PROGRESS_REPORT="${WRITE_PROGRESS_REPORT:-1}"
 MODEL_FILTER="${MODEL_FILTER:-}"
 DATASET_FILTER="${DATASET_FILTER:-math500,aime2024}"
+DATASET_SPECS="${DATASET_SPECS:-math500|math500|boxed_math/math500,aime2024|aime2024|boxed_math/aime2024}"
 export REPORT_TITLE BASE_MODEL_NOTE DATASET_FILTER
 
 mkdir -p "$RUAR_ROOT/logs" "$EVAL_ROOT" "$DATA_ROOT" "$CKPT_EVAL_ROOT" "$RUAR_ROOT/reports"
@@ -294,13 +297,14 @@ run_eval() {
         data.truncation=right \
         data.return_raw_chat=True \
         actor_rollout_ref.model.path="$model_path" \
-        actor_rollout_ref.model.use_remove_padding=False \
+        actor_rollout_ref.model.use_remove_padding="$USE_REMOVE_PADDING" \
         actor_rollout_ref.model.enable_gradient_checkpointing=False \
         actor_rollout_ref.actor.use_kl_loss=False \
         actor_rollout_ref.actor.optim.lr=1e-6 \
         actor_rollout_ref.actor.ppo_mini_batch_size=1 \
         actor_rollout_ref.actor.ppo_micro_batch_size_per_gpu=1 \
         actor_rollout_ref.actor.ppo_max_token_len_per_gpu="$TOKEN_BUDGET" \
+        actor_rollout_ref.actor.ulysses_sequence_parallel_size="$ULYSSES_SEQUENCE_PARALLEL_SIZE" \
         actor_rollout_ref.actor.fsdp_config.param_offload=True \
         actor_rollout_ref.actor.fsdp_config.optimizer_offload=True \
         actor_rollout_ref.rollout.name=vllm \
@@ -317,6 +321,7 @@ run_eval() {
         actor_rollout_ref.rollout.top_k="$ROLLOUT_TOP_K" \
         actor_rollout_ref.ref.log_prob_micro_batch_size_per_gpu=1 \
         actor_rollout_ref.ref.log_prob_max_token_len_per_gpu="$TOKEN_BUDGET" \
+        actor_rollout_ref.ref.ulysses_sequence_parallel_size="$ULYSSES_SEQUENCE_PARALLEL_SIZE" \
         algorithm.adv_estimator=rloo \
         trainer.val_before_train=True \
         trainer.val_only=True \
@@ -357,10 +362,7 @@ if [[ "$INCLUDE_RUAR_MODEL" == "1" ]]; then
     MODELS+=("$RUAR_MODEL_LABEL|$RUAR_MODEL_RESOLVED")
 fi
 
-declare -a DATASETS=(
-    "math500|math500|boxed_math/math500"
-    "aime2024|aime2024|boxed_math/aime2024"
-)
+IFS=',' read -r -a DATASETS <<< "$DATASET_SPECS"
 
 for model_spec in "${MODELS[@]}"; do
     IFS='|' read -r model_label model_path <<< "$model_spec"

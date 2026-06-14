@@ -53,10 +53,20 @@ reflection:
   # 0 means no cap: use all extracted Wait-start spans until stop_after_ready
   # stops further answer-forcing probes.
   max_spans_per_sample: 0
+  span_selection: first
   max_span_chars: null
   answer_rollouts: 4
   max_answer_tokens: 32
   max_probe_prompt_length: null
+  label_filter: signed
+  label_threshold: 0.0
+  length_aware_gamma: 0.0
+  length_aware_target: 128
+  length_aware_scope: response
+  post_answer_mode: off
+  post_answer_penalty: 0.0
+  post_answer_threshold: 1.0
+  class_threshold: 0.75
   stop_after_ready: True
   verify_num_processes: 8
   temperature: ${actor_rollout_ref.rollout.temperature}
@@ -69,7 +79,9 @@ algorithm:
   length_penalty:
     enable: True
     coef: 0.2
+    target: 8192
     mode: correct_group_sigmoid
+    cap: 1.0
     std_floor: 0.0
     only_correct: True
   advantage_scaling:
@@ -77,9 +89,14 @@ algorithm:
     only_correct: False
     ready_threshold: 0.75
     consecutive_required: 3
+    scope: all_post_ready
     exclude_final_answer: True
     post_ready_default_gamma_pos: 0.25
     post_ready_default_gamma_neg: 1.25
+    post_ready_positive_gamma: 0.2
+    post_ready_negative_gamma: 1.0
+    pre_ready_negative_gamma: 1.0
+    apply_to_all_wait: True
 trainer:
   project_name: ruar
   experiment_name: qwen3_8b_50step

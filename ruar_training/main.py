@@ -2,7 +2,6 @@ from __future__ import annotations
 
 import os
 from pathlib import Path
-from pprint import pprint
 
 import hydra
 import ray
@@ -60,7 +59,9 @@ def main_task(config, compute_score=None):
     from verl.workers.fsdp_workers import ActorRolloutRefWorker
     from verl.workers.reward_manager import RUARRewardManager
 
-    pprint(OmegaConf.to_container(config, resolve=True))
+    if os.environ.get("RUAR_PRINT_CONFIG", "0") == "1":
+        from pprint import pprint
+        pprint(OmegaConf.to_container(config, resolve=True))
     OmegaConf.resolve(config)
 
     local_model_path = copy_local_path_from_hdfs(config.actor_rollout_ref.model.path)

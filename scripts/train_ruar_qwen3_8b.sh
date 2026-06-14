@@ -8,10 +8,23 @@ SBATCH_SCRIPT="${SBATCH_SCRIPT:-$ROOT/slurm/train_ruar_qwen3_8b.sbatch}"
 LOG_DIR="${LOG_DIR:-$ROOT/logs}"
 
 if [[ -f "$CONFIG_FILE" ]]; then
+    declare -A RUAR_ENV_BEFORE_CONFIG=()
+    while IFS='=' read -r name _; do
+        if [[ "$name" =~ ^[A-Za-z_][A-Za-z0-9_]*$ ]]; then
+            RUAR_ENV_BEFORE_CONFIG["$name"]="${!name}"
+        fi
+    done < <(env)
+
     set -a
     # shellcheck disable=SC1090
     source "$CONFIG_FILE"
     set +a
+
+    # Keep values explicitly passed through the environment above config defaults.
+    for name in "${!RUAR_ENV_BEFORE_CONFIG[@]}"; do
+        export "$name=${RUAR_ENV_BEFORE_CONFIG[$name]}"
+    done
+    unset RUAR_ENV_BEFORE_CONFIG
 fi
 
 : "${MODEL_PATH:?Set MODEL_PATH to the local Qwen3-8B checkpoint or model id.}"
@@ -20,7 +33,6 @@ export SAVE_FREQ="${SAVE_FREQ:-50}"
 export TEST_FREQ="${TEST_FREQ:--1}"
 export RUN_FINAL_VALIDATION="${RUN_FINAL_VALIDATION:-False}"
 export REFLECTION_STOP_AFTER_READY="${REFLECTION_STOP_AFTER_READY:-True}"
-export LENGTH_PENALTY_MODE="${LENGTH_PENALTY_MODE:-correct_group_sigmoid}"
 export RUN_SUFFIX="${RUN_SUFFIX:-qwen3_8b_2gpu_train8_step${TOTAL_STEPS}_waitstart_answerready_lp02_m18k_r16k_mem030}"
 export RUAR_ROOT="$ROOT"
 

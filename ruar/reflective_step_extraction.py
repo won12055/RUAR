@@ -135,16 +135,18 @@ def extract_reflective_steps(
     max_spans: Optional[int] = None,
     max_span_chars: Optional[int] = None,
     cue_types: Optional[Iterable[int | str]] = None,
+    span_selection: str = "first",
 ) -> List[ReflectiveStep]:
     """Extract reflective reasoning steps within the <think> block.
 
     Args:
         text: Full response text. The <think>...</think> block is auto-detected;
             cues outside the block are ignored.
-        max_spans: If set, return only the first N spans.
+        max_spans: If set, return only N spans according to span_selection.
         max_span_chars: If set, truncate any span longer than this many chars.
         cue_types: Optional cue allow-list. Accepts ids or strings such as
             "wait", "alternative", or "all".
+        span_selection: Which spans to keep when max_spans is set.
 
     Returns:
         Reflective steps ordered by cue_start.
@@ -186,7 +188,18 @@ def extract_reflective_steps(
         spans = [span for span in spans if span.cue_type in allowed]
 
     if max_spans is not None and len(spans) > max_spans:
-        spans = spans[:max_spans]
+        selection = str(span_selection or "first").lower()
+        if selection == "first":
+            spans = spans[:max_spans]
+        elif selection in ("middle", "median"):
+            start = max(0, (len(spans) - max_spans) // 2)
+            spans = spans[start : start + max_spans]
+        elif selection in ("first_last", "first+last", "front_back"):
+            front = (max_spans + 1) // 2
+            back = max_spans - front
+            spans = spans[:front] + spans[-back:] if back > 0 else spans[:front]
+        else:
+            raise ValueError(f"Unknown reflective step span_selection: {span_selection}")
     return spans
 
 

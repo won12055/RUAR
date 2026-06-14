@@ -28,6 +28,7 @@ from verl import DataProto
 from verl.utils.torch_functional import get_eos_mask, pad_2d_list_to_length
 from verl.workers.rollout.base import BaseRollout
 from vllm import LLM, SamplingParams
+from verl.third_party.vllm import vllm_version
 
 
 def _pre_process_inputs(pad_token_id, prompt_token_ids: torch.Tensor) -> List[int]:
@@ -49,6 +50,16 @@ def _repeat_interleave(value: Union[torch.Tensor, np.ndarray], repeats: int) -> 
         return value.repeat_interleave(repeats, dim=0)
     else:
         return np.repeat(value, repeats, axis=0)
+
+
+def _as_bool(value: Any, default: bool = True) -> bool:
+    if value is None:
+        return default
+    if isinstance(value, bool):
+        return value
+    if isinstance(value, str):
+        return value.lower() in {"1", "true", "yes", "y", "on"}
+    return bool(value)
 
 
 class vLLMRollout(BaseRollout):
@@ -75,9 +86,10 @@ class vLLMRollout(BaseRollout):
         assert model_hf_config.max_position_embeddings >= config.prompt_length + config.response_length, \
             "model context length should be greater than total sequence length"
 
+        enable_sleep_mode = _as_bool(config.get("enable_sleep_mode", True), default=True)
         self.inference_engine = LLM(
             model=model_path,
-            enable_sleep_mode=True,
+            enable_sleep_mode=enable_sleep_mode,
             tensor_parallel_size=tensor_parallel_size,
             distributed_executor_backend="external_launcher",
             dtype=config.dtype,
@@ -93,8 +105,10 @@ class vLLMRollout(BaseRollout):
             seed=int(os.getenv("RANK", "0")) // tensor_parallel_size,
         )
 
-        # Offload vllm model to reduce peak memory usage
-        self.inference_engine.sleep(level=1)
+        # Offload vLLM model to reduce peak memory usage when sleep mode is enabled.
+        initial_sleep = _as_bool(config.get("initial_sleep", True), default=True)
+        if enable_sleep_mode and initial_sleep:
+            self.inference_engine.sleep(level=1)
 
         kwargs = dict(
             n=1,
@@ -102,7 +116,8 @@ class vLLMRollout(BaseRollout):
             max_tokens=config.response_length,
         )
 
-        kwargs['detokenize'] = False
+        if vllm_version != '0.3.1':
+            kwargs['detokenize'] = False
 
         # supporting adding any sampling params from the config file
         for k in config.keys():
@@ -132,6 +147,9 @@ class vLLMRollout(BaseRollout):
 
     @torch.no_grad()
     def generate_sequences(self, prompts: DataProto, **kwargs) -> DataProto:
+        if vllm_version in ('0.3.1', '0.4.2', '0.5.4', '0.6.3') and self.config.free_cache_engine:
+            self.inference_engine.init_cache_engine()
+
         idx = prompts.batch['input_ids']  # (bs, prompt_length)
         # left-padded attention_mask
         attention_mask = prompts.batch['attention_mask']
@@ -252,6 +270,9 @@ class vLLMRollout(BaseRollout):
                 'position_ids': position_ids
             },
             batch_size=batch_size)
+
+        if vllm_version in ('0.3.1', '0.4.2', '0.5.4', '0.6.3') and self.config.free_cache_engine:
+            self.inference_engine.free_cache_engine()
 
         return DataProto(batch=batch, non_tensor_batch=non_tensor_batch)
 

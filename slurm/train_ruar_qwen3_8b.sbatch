@@ -65,6 +65,8 @@ MAX_NUM_BATCHED_TOKENS="${MAX_NUM_BATCHED_TOKENS:-18432}"
 TOKEN_BUDGET="${TOKEN_BUDGET:-32768}"
 MAX_NUM_SEQS="${MAX_NUM_SEQS:-8}"
 GPU_MEMORY_UTILIZATION="${GPU_MEMORY_UTILIZATION:-0.30}"
+RUAR_VLLM_ENABLE_SLEEP_MODE="${RUAR_VLLM_ENABLE_SLEEP_MODE:-True}"
+RUAR_VLLM_INITIAL_SLEEP="${RUAR_VLLM_INITIAL_SLEEP:-True}"
 N_GPUS="${N_GPUS:-${SLURM_GPUS_ON_NODE:-2}}"
 USE_DYNAMIC_BSZ="${USE_DYNAMIC_BSZ:-True}"
 USE_REMOVE_PADDING="${USE_REMOVE_PADDING:-True}"
@@ -87,7 +89,9 @@ ROLLOUT_TOP_P="${ROLLOUT_TOP_P:-1.0}"
 
 LENGTH_PENALTY_ENABLE="${LENGTH_PENALTY_ENABLE:-True}"
 LENGTH_PENALTY_COEF="${LENGTH_PENALTY_COEF:-0.2}"
+LENGTH_PENALTY_TARGET="${LENGTH_PENALTY_TARGET:-8192}"
 LENGTH_PENALTY_MODE="${LENGTH_PENALTY_MODE:-correct_group_sigmoid}"
+LENGTH_PENALTY_CAP="${LENGTH_PENALTY_CAP:-1.0}"
 LENGTH_PENALTY_STD_FLOOR="${LENGTH_PENALTY_STD_FLOOR:-0.0}"
 LENGTH_PENALTY_ONLY_CORRECT="${LENGTH_PENALTY_ONLY_CORRECT:-True}"
 
@@ -95,15 +99,30 @@ ADVANTAGE_SCALING_ENABLE="${ADVANTAGE_SCALING_ENABLE:-True}"
 ADVANTAGE_SCALING_ONLY_CORRECT="${ADVANTAGE_SCALING_ONLY_CORRECT:-False}"
 ADVANTAGE_SCALING_READY_THRESHOLD="${ADVANTAGE_SCALING_READY_THRESHOLD:-0.75}"
 ADVANTAGE_SCALING_CONSECUTIVE_REQUIRED="${ADVANTAGE_SCALING_CONSECUTIVE_REQUIRED:-3}"
+ADVANTAGE_SCALING_SCOPE="${ADVANTAGE_SCALING_SCOPE:-all_post_ready}"
 ADVANTAGE_SCALING_EXCLUDE_FINAL_ANSWER="${ADVANTAGE_SCALING_EXCLUDE_FINAL_ANSWER:-True}"
 ADVANTAGE_SCALING_POST_READY_DEFAULT_GAMMA_POS="${ADVANTAGE_SCALING_POST_READY_DEFAULT_GAMMA_POS:-0.25}"
 ADVANTAGE_SCALING_POST_READY_DEFAULT_GAMMA_NEG="${ADVANTAGE_SCALING_POST_READY_DEFAULT_GAMMA_NEG:-1.25}"
+ADVANTAGE_SCALING_POST_READY_POSITIVE_GAMMA="${ADVANTAGE_SCALING_POST_READY_POSITIVE_GAMMA:-0.2}"
+ADVANTAGE_SCALING_POST_READY_NEGATIVE_GAMMA="${ADVANTAGE_SCALING_POST_READY_NEGATIVE_GAMMA:-1.0}"
+ADVANTAGE_SCALING_PRE_READY_NEGATIVE_GAMMA="${ADVANTAGE_SCALING_PRE_READY_NEGATIVE_GAMMA:-1.0}"
+ADVANTAGE_SCALING_APPLY_TO_ALL_WAIT="${ADVANTAGE_SCALING_APPLY_TO_ALL_WAIT:-True}"
 
 REFLECTION_STOP_AFTER_READY="${REFLECTION_STOP_AFTER_READY:-True}"
 # 0 means no cap: use all extracted Wait-start spans until
 # REFLECTION_STOP_AFTER_READY stops further answer-forcing probes.
 REFLECTION_MAX_SPANS_PER_SAMPLE="${REFLECTION_MAX_SPANS_PER_SAMPLE:-0}"
+REFLECTION_SPAN_SELECTION="${REFLECTION_SPAN_SELECTION:-first}"
 REFLECTION_MAX_ANSWER_TOKENS="${REFLECTION_MAX_ANSWER_TOKENS:-32}"
+REFLECTION_LABEL_FILTER="${REFLECTION_LABEL_FILTER:-signed}"
+REFLECTION_LABEL_THRESHOLD="${REFLECTION_LABEL_THRESHOLD:-0.0}"
+REFLECTION_LENGTH_AWARE_GAMMA="${REFLECTION_LENGTH_AWARE_GAMMA:-0.0}"
+REFLECTION_LENGTH_AWARE_TARGET="${REFLECTION_LENGTH_AWARE_TARGET:-128}"
+REFLECTION_LENGTH_AWARE_SCOPE="${REFLECTION_LENGTH_AWARE_SCOPE:-response}"
+REFLECTION_POST_ANSWER_MODE="${REFLECTION_POST_ANSWER_MODE:-off}"
+REFLECTION_POST_ANSWER_PENALTY="${REFLECTION_POST_ANSWER_PENALTY:-0.0}"
+REFLECTION_POST_ANSWER_THRESHOLD="${REFLECTION_POST_ANSWER_THRESHOLD:-1.0}"
+REFLECTION_CLASS_THRESHOLD="${REFLECTION_CLASS_THRESHOLD:-0.75}"
 PROBE_PROMPT_MARGIN="${PROBE_PROMPT_MARGIN:-16}"
 MAX_PROBE_PROMPT_LENGTH="${MAX_PROBE_PROMPT_LENGTH:-$((MAX_MODEL_LEN - REFLECTION_MAX_ANSWER_TOKENS - PROBE_PROMPT_MARGIN))}"
 
@@ -122,8 +141,8 @@ mkdir -p "$RUAR_ROOT/logs" "$COT_DUMP_DIR" "$CKPT_DIR"
 echo "[RUAR] dataset=$DATASET_TAG condition=$RUN_CONDITION steps=$TOTAL_STEPS model=$MODEL_PATH"
 echo "[RUAR] train_file=$TRAIN_FILE val_file=$VAL_FILE"
 echo "[RUAR] prompt=$MAX_PROMPT_LENGTH response=$MAX_RESPONSE_LENGTH model_len=$MAX_MODEL_LEN rollout_n=$ROLLOUT_N"
-echo "[RUAR] length_penalty=$LENGTH_PENALTY_ENABLE coef=$LENGTH_PENALTY_COEF mode=$LENGTH_PENALTY_MODE only_correct=$LENGTH_PENALTY_ONLY_CORRECT"
-echo "[RUAR] advantage_scaling=$ADVANTAGE_SCALING_ENABLE ready_threshold=$ADVANTAGE_SCALING_READY_THRESHOLD consecutive=$ADVANTAGE_SCALING_CONSECUTIVE_REQUIRED"
+echo "[RUAR] length_penalty=$LENGTH_PENALTY_ENABLE coef=$LENGTH_PENALTY_COEF target=$LENGTH_PENALTY_TARGET mode=$LENGTH_PENALTY_MODE cap=$LENGTH_PENALTY_CAP std_floor=$LENGTH_PENALTY_STD_FLOOR only_correct=$LENGTH_PENALTY_ONLY_CORRECT"
+echo "[RUAR] advantage_scaling=$ADVANTAGE_SCALING_ENABLE ready_threshold=$ADVANTAGE_SCALING_READY_THRESHOLD consecutive=$ADVANTAGE_SCALING_CONSECUTIVE_REQUIRED scope=$ADVANTAGE_SCALING_SCOPE"
 echo "[RUAR] stop_after_ready=$REFLECTION_STOP_AFTER_READY max_probe_prompt=$MAX_PROBE_PROMPT_LENGTH"
 
 python - <<'PY'
@@ -160,6 +179,8 @@ python -m ruar_training.main \
     actor_rollout_ref.rollout.n="$ROLLOUT_N" \
     actor_rollout_ref.rollout.tensor_model_parallel_size="$N_GPUS" \
     actor_rollout_ref.rollout.enforce_eager=True \
+    actor_rollout_ref.rollout.enable_sleep_mode="$RUAR_VLLM_ENABLE_SLEEP_MODE" \
+    actor_rollout_ref.rollout.initial_sleep="$RUAR_VLLM_INITIAL_SLEEP" \
     actor_rollout_ref.rollout.gpu_memory_utilization="$GPU_MEMORY_UTILIZATION" \
     actor_rollout_ref.rollout.max_num_seqs="$MAX_NUM_SEQS" \
     actor_rollout_ref.rollout.max_num_batched_tokens="$MAX_NUM_BATCHED_TOKENS" \
@@ -173,22 +194,39 @@ python -m ruar_training.main \
     algorithm.reward_gt_coef="$REWARD_GT_COEF" \
     algorithm.length_penalty.enable="$LENGTH_PENALTY_ENABLE" \
     algorithm.length_penalty.coef="$LENGTH_PENALTY_COEF" \
+    algorithm.length_penalty.target="$LENGTH_PENALTY_TARGET" \
     algorithm.length_penalty.mode="$LENGTH_PENALTY_MODE" \
+    algorithm.length_penalty.cap="$LENGTH_PENALTY_CAP" \
     algorithm.length_penalty.std_floor="$LENGTH_PENALTY_STD_FLOOR" \
     algorithm.length_penalty.only_correct="$LENGTH_PENALTY_ONLY_CORRECT" \
     algorithm.advantage_scaling.enable="$ADVANTAGE_SCALING_ENABLE" \
     algorithm.advantage_scaling.only_correct="$ADVANTAGE_SCALING_ONLY_CORRECT" \
     algorithm.advantage_scaling.ready_threshold="$ADVANTAGE_SCALING_READY_THRESHOLD" \
     algorithm.advantage_scaling.consecutive_required="$ADVANTAGE_SCALING_CONSECUTIVE_REQUIRED" \
+    algorithm.advantage_scaling.scope="$ADVANTAGE_SCALING_SCOPE" \
     algorithm.advantage_scaling.exclude_final_answer="$ADVANTAGE_SCALING_EXCLUDE_FINAL_ANSWER" \
     algorithm.advantage_scaling.post_ready_default_gamma_pos="$ADVANTAGE_SCALING_POST_READY_DEFAULT_GAMMA_POS" \
     algorithm.advantage_scaling.post_ready_default_gamma_neg="$ADVANTAGE_SCALING_POST_READY_DEFAULT_GAMMA_NEG" \
+    algorithm.advantage_scaling.post_ready_positive_gamma="$ADVANTAGE_SCALING_POST_READY_POSITIVE_GAMMA" \
+    algorithm.advantage_scaling.post_ready_negative_gamma="$ADVANTAGE_SCALING_POST_READY_NEGATIVE_GAMMA" \
+    algorithm.advantage_scaling.pre_ready_negative_gamma="$ADVANTAGE_SCALING_PRE_READY_NEGATIVE_GAMMA" \
+    algorithm.advantage_scaling.apply_to_all_wait="$ADVANTAGE_SCALING_APPLY_TO_ALL_WAIT" \
     reflection.enable=True \
     reflection.cue_types="['wait']" \
     reflection.answer_rollouts=4 \
     reflection.max_spans_per_sample="$REFLECTION_MAX_SPANS_PER_SAMPLE" \
+    reflection.span_selection="$REFLECTION_SPAN_SELECTION" \
     reflection.max_answer_tokens="$REFLECTION_MAX_ANSWER_TOKENS" \
     reflection.max_probe_prompt_length="$MAX_PROBE_PROMPT_LENGTH" \
+    reflection.label_filter="$REFLECTION_LABEL_FILTER" \
+    reflection.label_threshold="$REFLECTION_LABEL_THRESHOLD" \
+    reflection.length_aware_gamma="$REFLECTION_LENGTH_AWARE_GAMMA" \
+    reflection.length_aware_target="$REFLECTION_LENGTH_AWARE_TARGET" \
+    reflection.length_aware_scope="$REFLECTION_LENGTH_AWARE_SCOPE" \
+    reflection.post_answer_mode="$REFLECTION_POST_ANSWER_MODE" \
+    reflection.post_answer_penalty="$REFLECTION_POST_ANSWER_PENALTY" \
+    reflection.post_answer_threshold="$REFLECTION_POST_ANSWER_THRESHOLD" \
+    reflection.class_threshold="$REFLECTION_CLASS_THRESHOLD" \
     reflection.stop_after_ready="$REFLECTION_STOP_AFTER_READY" \
     reflection.verify_num_processes=8 \
     trainer.val_before_train=False \

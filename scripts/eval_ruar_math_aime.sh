@@ -4,6 +4,7 @@ set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 RUAR_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
+export RUAR_ROOT
 LOG_DIR="${RUAR_LOG_DIR:-$RUAR_ROOT/logs}"
 mkdir -p "$LOG_DIR" "$RUAR_ROOT/reports" "$RUAR_ROOT/cot_dumps" "$RUAR_ROOT/checkpoints/eval"
 

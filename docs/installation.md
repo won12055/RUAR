@@ -63,9 +63,25 @@ python -m pip install -r requirements-train.txt
 ```
 
 The paper-default launcher uses `USE_REMOVE_PADDING=True`, which requires a
-`flash-attn` build compatible with your PyTorch/CUDA stack. Install a matching
-wheel/source build before launching, or set `USE_REMOVE_PADDING=False` to run
-without FlashAttention-based padding removal.
+`flash-attn` build compatible with your Python, PyTorch, and CUDA stack.
+`flash-attn` is not pinned in `requirements-train.txt` because its binary
+extension is environment-specific. Install a matching wheel/source build after
+PyTorch, then verify the CUDA extension import:
+
+```bash
+# Example only; choose the flash-attn build that matches your environment.
+python -m pip install flash-attn --no-build-isolation
+
+python - <<'PY'
+import flash_attn
+import flash_attn_2_cuda
+print("flash-attn import ok:", flash_attn.__file__)
+PY
+```
+
+For a lightweight smoke run you may set `USE_REMOVE_PADDING=False` to use the
+non-FlashAttention path. Paper-default Qwen3-8B reproduction should use
+`USE_REMOVE_PADDING=True` with a working `flash-attn` installation.
 
 Verify key packages:
 
@@ -88,6 +104,7 @@ tokenizers 0.22.2
 ray 2.55.1
 hydra-core 1.3.2
 omegaconf 2.3.0
+flash-attn 2.8.3
 ```
 
 ## Required Inputs for Training

@@ -107,7 +107,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--train-size", type=int, default=TRAIN_SIZE_DEFAULT)
     parser.add_argument("--val-size", type=int, default=VAL_SIZE_DEFAULT)
     parser.add_argument("--seed", type=int, default=42)
-    parser.add_argument("--data-source", default="numina_3k")
+    parser.add_argument("--data-source", default="numina")
     parser.add_argument("--input-jsonl", type=Path, default=None)
     parser.add_argument("--hf-repo", default="AI-MO/NuminaMath-CoT")
     parser.add_argument("--hf-split", default="train")

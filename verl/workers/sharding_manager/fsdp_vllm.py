@@ -29,7 +29,7 @@ except ImportError:
 
 from verl import DataProto
 from verl.protocol import all_gather_data_proto
-from verl.third_party.vllm import LLM
+from verl.third_party.vllm import LLM, vllm_version
 from verl.third_party.vllm import parallel_state as vllm_ps
 from verl.utils.debug import GPUMemoryLogger, log_gpu_memory_usage
 from verl.utils.fsdp_utils import fsdp_version, load_fsdp_model_to_gpu, offload_fsdp_model_to_cpu
@@ -58,7 +58,10 @@ class FSDPVLLMShardingManager(BaseShardingManager):
         self.inference_engine = inference_engine
         # self.model_runner = inference_engine.llm_engine.model_executor.driver_worker.worker.model_runner if inference_engine else None
 
-        self.model_runner = self.inference_engine.llm_engine.model_executor.driver_worker.worker.model_runner if self.inference_engine else None
+        if "vllm_v_0_6_3" in str(type(self.inference_engine)) or "vllm_v_0_5_4" in str(type(self.inference_engine)):
+            self.model_runner = self.inference_engine.llm_engine.model_executor.worker.model_runner if self.inference_engine else None
+        else:
+            self.model_runner = self.inference_engine.llm_engine.model_executor.driver_worker.worker.model_runner if self.inference_engine else None
 
         self.model_config = model_config
         self.device_mesh = device_mesh
@@ -105,20 +108,27 @@ class FSDPVLLMShardingManager(BaseShardingManager):
             load_fsdp_model_to_gpu(self.module)
         params = self.module.state_dict()
         log_gpu_memory_usage("After state_dict() in sharding manager memory", logger=logger)
-        if "tags" in inspect.signature(self.inference_engine.wake_up).parameters:
-            self.inference_engine.wake_up(tags=["weights"])
+
+        load_format = "hf" if self.full_params else "dtensor"
+        if vllm_version in ("0.5.4", "0.6.3"):
+            self.inference_engine.sync_model_weights(params, load_format=load_format)
+            log_gpu_memory_usage("After sync model weights in sharding manager", logger=logger)
+            del params
         else:
-            self.inference_engine.wake_up()
+            if "tags" in inspect.signature(self.inference_engine.wake_up).parameters:
+                self.inference_engine.wake_up(tags=["weights"])
+            else:
+                self.inference_engine.wake_up()
 
-        self.update_params(params)
-        log_gpu_memory_usage("After sync model weights in sharding manager", logger=logger)
-        del params
-        if self.offload_param:
-            offload_fsdp_model_to_cpu(self.module)
-        torch.cuda.empty_cache()
+            self.update_params(params)
+            log_gpu_memory_usage("After sync model weights in sharding manager", logger=logger)
+            del params
+            if self.offload_param:
+                offload_fsdp_model_to_cpu(self.module)
+            torch.cuda.empty_cache()
 
-        if "tags" in inspect.signature(self.inference_engine.wake_up).parameters:
-            self.inference_engine.wake_up(tags=["kv_cache"])
+            if "tags" in inspect.signature(self.inference_engine.wake_up).parameters:
+                self.inference_engine.wake_up(tags=["kv_cache"])
 
         log_gpu_memory_usage("After del state_dict and empty_cache in sharding manager", logger=logger)
 
@@ -129,7 +139,10 @@ class FSDPVLLMShardingManager(BaseShardingManager):
 
     @GPUMemoryLogger(role="fsdp vllm sharding_manager", logger=logger)
     def __exit__(self, exc_type, exc_value, traceback):
-        self.inference_engine.sleep(level=1)
+        if vllm_version in ("0.5.4", "0.6.3"):
+            self.inference_engine.offload_model_weights()
+        else:
+            self.inference_engine.sleep(level=1)
 
         self.module.train()
 

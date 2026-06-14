@@ -183,8 +183,6 @@ class ActorRolloutRefWorker(Worker):
         }
         override_config_kwargs.update(override_model_config)
         update_model_config(actor_model_config, override_config_kwargs=override_config_kwargs)
-        if self.rank == 0:
-            print(f'Model config after override: {actor_model_config}')
 
         # NOTE(fix me): tie_word_embedding causes meta_tensor init to hang
         init_context = get_init_weight_context_manager(use_meta_tensor=not actor_model_config.tie_word_embeddings,
@@ -249,8 +247,6 @@ class ActorRolloutRefWorker(Worker):
         mixed_precision = MixedPrecision(param_dtype=param_dtype, reduce_dtype=reduce_dtype, buffer_dtype=buffer_dtype)
 
         auto_wrap_policy = get_fsdp_wrap_policy(module=actor_module, config=fsdp_config.get('wrap_policy', None))
-
-        print(f'wrap_policy: {auto_wrap_policy}')
 
         fsdp_mesh = self.device_mesh
         sharding_strategy = get_sharding_strategy(fsdp_mesh)

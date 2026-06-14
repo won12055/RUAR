@@ -1,4 +1,4 @@
-# Copyright 2024 PRIME team and/or its affiliates
+# Copyright 2026 RUAR authors
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -16,6 +16,7 @@ FSDP PPO Trainer with Ray-based single controller.
 This trainer supports model-agonistic model initialization with huggingface
 """
 
+import hashlib
 import json
 import os
 import statistics
@@ -29,7 +30,7 @@ from pprint import pprint
 
 import numpy as np
 import torch
-from omegaconf import OmegaConf
+from omegaconf import OmegaConf, open_dict
 
 from verl import DataProto
 from verl.single_controller.ray import RayWorkerGroup
@@ -49,6 +50,59 @@ from ruar.reflective_step_extraction import (
     find_final_answer_start,
 )
 from verl.workers.reward_manager.ruar import parallel_compute_score_async
+
+
+_TRUTHY_ENV = {'1', 'true', 'yes', 'on'}
+
+
+def _debug_update_checksum_enabled(global_step):
+    if os.environ.get('RUAR_DEBUG_UPDATE_CHECKSUM', '').strip().lower() not in _TRUTHY_ENV:
+        return False
+    steps = os.environ.get('RUAR_DEBUG_UPDATE_CHECKSUM_STEPS', '1').strip().lower()
+    if steps in {'*', 'all'}:
+        return True
+    try:
+        enabled_steps = {int(part.strip()) for part in steps.split(',') if part.strip()}
+    except ValueError:
+        enabled_steps = {1}
+    return int(global_step) in enabled_steps
+
+
+def _tensor_debug_record(tensor):
+    value = tensor.detach().cpu().contiguous()
+    hash_value = value
+    if value.dtype == torch.bfloat16:
+        hash_value = value.float()
+
+    digest = hashlib.sha256()
+    digest.update(str(tuple(value.shape)).encode('utf-8'))
+    digest.update(str(value.dtype).encode('utf-8'))
+    digest.update(hash_value.numpy().tobytes())
+
+    stat_value = value.float()
+    record = {
+        'shape': list(value.shape),
+        'dtype': str(value.dtype),
+        'sha256': digest.hexdigest(),
+    }
+    if stat_value.numel() > 0:
+        record.update({
+            'sum': float(stat_value.sum().item()),
+            'mean': float(stat_value.mean().item()),
+            'min': float(stat_value.min().item()),
+            'max': float(stat_value.max().item()),
+        })
+    return record
+
+
+def _log_update_checksum(phase, global_step, tensors):
+    payload = {
+        'event': 'ruar_update_checksum',
+        'phase': phase,
+        'global_step': int(global_step),
+        'tensors': {name: _tensor_debug_record(tensor) for name, tensor in tensors.items()},
+    }
+    print(json.dumps(payload, sort_keys=True), flush=True)
 
 
 def compute_advantage(data: DataProto, adv_estimator, config):
@@ -219,6 +273,12 @@ class RayRUARTrainer(RayPPOTrainer):
 
         self.total_training_steps = total_training_steps
         print(f'Total training steps: {self.total_training_steps}')
+
+        OmegaConf.set_struct(self.config, True)
+        with open_dict(self.config):
+            self.config.actor_rollout_ref.actor.optim.total_training_steps = total_training_steps
+            if self.config.get("critic") is not None and self.config.critic.get("optim") is not None:
+                self.config.critic.optim.total_training_steps = total_training_steps
 
     def _save_checkpoint(self):
         # path: given_path + `/global_step_{global_steps}` + `/actor`
@@ -588,6 +648,51 @@ class RayRUARTrainer(RayPPOTrainer):
         half = max_chars // 2
         return text[:half] + "\n...[truncated]...\n" + text[-(max_chars - half):]
 
+    def _reflection_train_valid_mask(self, labels: torch.Tensor, valid: torch.Tensor, cfg):
+        mode = str(cfg.get('label_filter', 'all')).lower()
+        threshold = float(cfg.get('label_threshold', 0.0))
+        train_valid = valid.bool().clone()
+        if mode in ('all', 'none'):
+            return train_valid
+        if mode in ('positive', 'positive_only', 'pos'):
+            return train_valid & (labels > threshold)
+        if mode in ('nonzero', 'signed', 'positive_negative'):
+            return train_valid & (labels.abs() > threshold)
+        if mode in ('negative', 'negative_only', 'neg'):
+            return train_valid & (labels < -threshold)
+        if mode in ('nonnegative', 'positive_zero'):
+            return train_valid & (labels >= threshold)
+        raise ValueError(f"Unknown reflection label_filter: {mode}")
+
+    def _reflection_length_penalty_per_token(self, cfg):
+        explicit = cfg.get('span_penalty_per_token', None)
+        if explicit is not None:
+            return float(explicit)
+
+        gamma = float(cfg.get('length_aware_gamma', 0.0))
+        target = float(cfg.get('length_aware_target', 0.0))
+        if gamma == 0.0:
+            return 0.0
+        if target <= 0.0:
+            raise ValueError(f"reflection.length_aware_target must be positive when gamma > 0, got {target}")
+        return gamma / target
+
+    def _reflection_length_penalty_scope(self, cfg):
+        scope = str(cfg.get('length_aware_scope', 'response')).lower()
+        aliases = {
+            'off': 'none',
+            'disable': 'none',
+            'disabled': 'none',
+            'completion': 'response',
+            'trajectory': 'response',
+            'full': 'response',
+            'whole': 'response',
+        }
+        scope = aliases.get(scope, scope)
+        if scope not in ('none', 'span', 'response'):
+            raise ValueError(f"Unknown reflection.length_aware_scope: {scope}")
+        return scope
+
     def _maybe_attach_reflection_labels(self, batch: DataProto, metrics: dict) -> DataProto:
         reflection_cfg = self.config.get('reflection', {})
         if not reflection_cfg.get('enable', False):
@@ -633,8 +738,13 @@ class RayRUARTrainer(RayPPOTrainer):
             K=k,
             max_spans_per_sample=estimator_max_spans,
             max_span_chars=reflection_cfg.get('max_span_chars', None),
+            span_selection=reflection_cfg.get('span_selection', 'first'),
             cue_types=reflection_cfg.get('cue_types', ['all']),
             answer_forcing_suffix=answer_forcing_suffix,
+            post_answer_mode=reflection_cfg.get('post_answer_mode', 'off'),
+            post_answer_penalty=reflection_cfg.get('post_answer_penalty', 0.0),
+            post_answer_threshold=reflection_cfg.get('post_answer_threshold', 1.0),
+            class_threshold=reflection_cfg.get('class_threshold', 0.75),
             ready_threshold=scaling_cfg.get('ready_threshold', 0.75),
             consecutive_required=scaling_cfg.get('consecutive_required', 3),
             stop_after_ready=bool(reflection_cfg.get('stop_after_ready', False)),
@@ -655,16 +765,25 @@ class RayRUARTrainer(RayPPOTrainer):
         refl_start = torch.zeros((bsz, max_spans), dtype=torch.long, device=device)
         refl_end = torch.zeros((bsz, max_spans), dtype=torch.long, device=device)
         refl_type = torch.zeros((bsz, max_spans), dtype=torch.long, device=device)
+        refl_label = torch.zeros((bsz, max_spans), dtype=torch.float32, device=device)
         refl_utility = torch.zeros((bsz, max_spans), dtype=torch.float32, device=device)
         refl_raw_utility = torch.zeros((bsz, max_spans), dtype=torch.float32, device=device)
+        refl_span_penalty = torch.zeros((bsz, max_spans), dtype=torch.float32, device=device)
+        refl_length_penalty_units = torch.zeros((bsz, max_spans), dtype=torch.long, device=device)
+        refl_response_length = torch.zeros((bsz, max_spans), dtype=torch.long, device=device)
         refl_p_before = torch.zeros((bsz, max_spans), dtype=torch.float32, device=device)
         refl_p_after = torch.zeros((bsz, max_spans), dtype=torch.float32, device=device)
+        refl_post_answer = torch.zeros((bsz, max_spans), dtype=torch.bool, device=device)
+        refl_post_answer_score = torch.zeros((bsz, max_spans), dtype=torch.float32, device=device)
+        refl_post_answer_penalty = torch.zeros((bsz, max_spans), dtype=torch.float32, device=device)
         refl_cue_start_char = torch.zeros((bsz, max_spans), dtype=torch.long, device=device)
         refl_cue_end_char = torch.zeros((bsz, max_spans), dtype=torch.long, device=device)
         refl_span_end_char = torch.zeros((bsz, max_spans), dtype=torch.long, device=device)
         refl_valid = torch.zeros((bsz, max_spans), dtype=torch.bool, device=device)
         refl_ready_boundary_char = torch.full((bsz,), -1, dtype=torch.long, device=device)
         probe_records_by_sample = [[] for _ in range(bsz)]
+        length_penalty_per_token = self._reflection_length_penalty_per_token(reflection_cfg)
+        length_penalty_scope = self._reflection_length_penalty_scope(reflection_cfg)
 
         filled = [0 for _ in range(bsz)]
         for label in labels:
@@ -683,10 +802,26 @@ class RayRUARTrainer(RayPPOTrainer):
             refl_start[label.sample_idx, slot] = start
             refl_end[label.sample_idx, slot] = end
             refl_type[label.sample_idx, slot] = label.cue_type
+            span_len = end - start
+            response_token_length = int(response_token_lengths[label.sample_idx].detach().cpu().item())
+            if length_penalty_scope == 'none':
+                penalty_units = 0
+            elif length_penalty_scope == 'span':
+                penalty_units = span_len
+            else:
+                penalty_units = response_token_length
+            length_penalty = length_penalty_per_token * penalty_units
             refl_utility[label.sample_idx, slot] = label.utility
             refl_raw_utility[label.sample_idx, slot] = label.raw_utility
+            refl_span_penalty[label.sample_idx, slot] = length_penalty
+            refl_length_penalty_units[label.sample_idx, slot] = penalty_units
+            refl_response_length[label.sample_idx, slot] = response_token_length
+            refl_label[label.sample_idx, slot] = label.utility - length_penalty
             refl_p_before[label.sample_idx, slot] = label.p_before
             refl_p_after[label.sample_idx, slot] = label.p_after
+            refl_post_answer[label.sample_idx, slot] = label.post_answer
+            refl_post_answer_score[label.sample_idx, slot] = label.post_answer_score
+            refl_post_answer_penalty[label.sample_idx, slot] = label.post_answer_penalty
             refl_cue_start_char[label.sample_idx, slot] = label.cue_start_char
             refl_cue_end_char[label.sample_idx, slot] = label.cue_end_char
             refl_span_end_char[label.sample_idx, slot] = label.span_end_char
@@ -729,6 +864,8 @@ class RayRUARTrainer(RayPPOTrainer):
             if boundary_char is not None and int(boundary_char) >= 0:
                 refl_ready_boundary_char[sample_idx] = int(boundary_char)
 
+        refl_train_valid = self._reflection_train_valid_mask(refl_label, refl_valid, reflection_cfg)
+
         adv_gamma_pos = torch.ones((bsz, response_len), dtype=torch.float32, device=device)
         adv_gamma_neg = torch.ones((bsz, response_len), dtype=torch.float32, device=device)
         scaling_boundaries = [-1 for _ in range(bsz)]
@@ -741,7 +878,9 @@ class RayRUARTrainer(RayPPOTrainer):
 
             post_ready_default_gamma_pos = float(scaling_cfg.get('post_ready_default_gamma_pos', 0.25))
             post_ready_default_gamma_neg = float(scaling_cfg.get('post_ready_default_gamma_neg', 1.25))
+            pre_negative_gamma = float(scaling_cfg.get('pre_ready_negative_gamma', 1.0))
             consecutive_required = max(1, int(scaling_cfg.get('consecutive_required', 3)))
+            scope = str(scaling_cfg.get('scope', 'all_post_ready')).lower()
             exclude_final_answer = bool(scaling_cfg.get('exclude_final_answer', True))
             boundary_char_positions = []
             boundary_token_positions = []
@@ -805,6 +944,8 @@ class RayRUARTrainer(RayPPOTrainer):
                 if boundary < 0:
                     continue
                 response_token_length = int(response_token_lengths[sample_idx].detach().cpu().item())
+                if pre_negative_gamma != 1.0:
+                    adv_gamma_neg[sample_idx, :response_token_length] = pre_negative_gamma
 
                 boundary_token, _ = char_span_to_token_span(
                     response_texts[sample_idx],
@@ -834,7 +975,7 @@ class RayRUARTrainer(RayPPOTrainer):
                             final_answer_protected_tokens += response_token_length - final_answer_token
                             scaling_end_token = max(boundary_token, final_answer_token)
 
-                if boundary_token < scaling_end_token:
+                if scope == 'all_post_ready' and boundary_token < scaling_end_token:
                     adv_gamma_pos[sample_idx, boundary_token:scaling_end_token] = post_ready_default_gamma_pos
                     adv_gamma_neg[sample_idx, boundary_token:scaling_end_token] = post_ready_default_gamma_neg
 
@@ -842,15 +983,23 @@ class RayRUARTrainer(RayPPOTrainer):
             'refl_start': refl_start,
             'refl_end': refl_end,
             'refl_type': refl_type,
+            'refl_label': refl_label,
             'refl_utility': refl_utility,
             'refl_raw_utility': refl_raw_utility,
+            'refl_span_penalty': refl_span_penalty,
+            'refl_length_penalty_units': refl_length_penalty_units,
+            'refl_response_length': refl_response_length,
             'refl_p_before': refl_p_before,
             'refl_p_after': refl_p_after,
+            'refl_post_answer': refl_post_answer,
+            'refl_post_answer_score': refl_post_answer_score,
+            'refl_post_answer_penalty': refl_post_answer_penalty,
             'refl_cue_start_char': refl_cue_start_char,
             'refl_cue_end_char': refl_cue_end_char,
             'refl_span_end_char': refl_span_end_char,
             'refl_ready_boundary_char': refl_ready_boundary_char,
             'refl_valid': refl_valid,
+            'refl_train_valid': refl_train_valid,
             'adv_gamma_pos': adv_gamma_pos,
             'adv_gamma_neg': adv_gamma_neg,
         })
@@ -861,23 +1010,42 @@ class RayRUARTrainer(RayPPOTrainer):
                 dtype=object,
             )
         valid_count = refl_valid.sum().item()
+        train_count = refl_train_valid.sum().item()
         valid_p_before = refl_p_before[refl_valid]
         valid_p_after = refl_p_after[refl_valid]
+        valid_post_answer = refl_post_answer[refl_valid]
+        valid_post_answer_score = refl_post_answer_score[refl_valid]
+        valid_post_answer_penalty = refl_post_answer_penalty[refl_valid]
         valid_utility = refl_utility[refl_valid]
         valid_raw_utility = refl_raw_utility[refl_valid]
-        positive_count = ((refl_utility > 0.0) & refl_valid).sum().item()
-        negative_count = ((refl_utility < 0.0) & refl_valid).sum().item()
-        zero_count = (refl_valid & (refl_utility == 0.0)).sum().item()
+        valid_label = refl_label[refl_valid]
+        valid_span_penalty = refl_span_penalty[refl_valid]
+        label_threshold = float(reflection_cfg.get('label_threshold', 0.0))
+        positive_count = ((refl_utility > label_threshold) & refl_valid).sum().item()
+        negative_count = ((refl_utility < -label_threshold) & refl_valid).sum().item()
+        zero_count = (refl_valid & (refl_utility.abs() <= label_threshold)).sum().item()
         metrics.update({
             'reflection/valid_spans': valid_count,
+            'reflection/train_spans': train_count,
             'reflection/samples_with_span': (refl_valid.any(dim=1).float().mean().item()),
+            'reflection/samples_with_train_span': (refl_train_valid.any(dim=1).float().mean().item()),
             'reflection/positive_spans': positive_count,
             'reflection/zero_spans': zero_count,
             'reflection/negative_spans': negative_count,
             'reflection/mean_utility': valid_utility.mean().item() if valid_count > 0 else 0.0,
             'reflection/mean_raw_utility': valid_raw_utility.mean().item() if valid_count > 0 else 0.0,
+            'reflection/mean_label': valid_label.mean().item() if valid_count > 0 else 0.0,
+            'reflection/mean_span_penalty': valid_span_penalty.mean().item() if valid_count > 0 else 0.0,
+            'reflection/mean_length_penalty': valid_span_penalty.mean().item() if valid_count > 0 else 0.0,
+            'reflection/length_penalty_per_token': length_penalty_per_token,
+            'reflection/span_penalty_per_token': length_penalty_per_token,
+            'reflection/length_penalty_scope_id': {'none': 0, 'span': 1, 'response': 2}[length_penalty_scope],
             'reflection/mean_p_before': valid_p_before.mean().item() if valid_count > 0 else 0.0,
             'reflection/mean_p_after': valid_p_after.mean().item() if valid_count > 0 else 0.0,
+            'reflection/post_answer_spans': valid_post_answer.float().sum().item() if valid_count > 0 else 0.0,
+            'reflection/post_answer_rate': valid_post_answer.float().mean().item() if valid_count > 0 else 0.0,
+            'reflection/mean_post_answer_score': valid_post_answer_score.mean().item() if valid_count > 0 else 0.0,
+            'reflection/mean_post_answer_penalty': valid_post_answer_penalty.mean().item() if valid_count > 0 else 0.0,
         })
         if scaling_enabled:
             active = response_mask > 0
@@ -951,7 +1119,6 @@ class RayRUARTrainer(RayPPOTrainer):
                 output_multiplier=1,
                 phase_label="validation_generate",
             )
-            print('validation generation end')
 
             output_ids = test_output_gen_batch.batch['responses']
             output_texts = [self.tokenizer.decode(ids, skip_special_tokens=True) for ids in output_ids]
@@ -1054,7 +1221,6 @@ class RayRUARTrainer(RayPPOTrainer):
                     batch.meta_info['global_token_num'] = torch.sum(batch.batch['attention_mask'], dim=-1).tolist()
 
                     metrics_ratio = self.count_prefix_ratio(batch)
-                    print(metrics_ratio)
                     metrics.update(metrics_ratio)
 
                     # verify
@@ -1115,6 +1281,23 @@ class RayRUARTrainer(RayPPOTrainer):
                         })
 
                         metrics.update({'return/smoothness': compute_return_smoothness(batch.batch['returns']).item()})
+
+                    debug_update_checksum = _debug_update_checksum_enabled(self.global_steps)
+                    if debug_update_checksum:
+                        batch.meta_info['global_step'] = self.global_steps
+                        response_length = batch.batch['responses'].shape[-1]
+                        response_mask = batch.batch['attention_mask'][:, -response_length:]
+                        checksum_tensors = {
+                            'responses': batch.batch['responses'],
+                            'attention_mask': batch.batch['attention_mask'],
+                            'response_mask': response_mask,
+                            'old_log_probs': batch.batch['old_log_probs'],
+                            'advantages': batch.batch['advantages'],
+                            'returns': batch.batch['returns'],
+                        }
+                        if 'acc' in batch.batch:
+                            checksum_tensors['acc'] = batch.batch['acc']
+                        _log_update_checksum('pre_update_actor_batch', self.global_steps, checksum_tensors)
 
                     with _timer('update_actor', timing_raw):
                         ppo_epochs = max(1, int(self.config.actor_rollout_ref.actor.ppo_epochs))

@@ -78,6 +78,10 @@ class ReflectiveStepUtility:
     p_after: float
     utility: float  # p_after - p_before
     raw_utility: float  # retained for logging parity with the trainer
+    post_answer: bool = False
+    post_answer_score: float = 0.0
+    post_answer_penalty: float = 0.0
+    span_class: int = 0
 
 
 @dataclass
@@ -224,6 +228,23 @@ def _estimate_solve_probabilities(
     return probabilities, evaluations
 
 
+def classify_step(p_before: float, p_after: float, class_threshold: float) -> int:
+    """Classify a reflective step for logging/debugging.
+
+    The actor update uses the continuous utility value; this class id is kept so
+    dumps can expose the same diagnostic categories as the training run.
+    """
+    before_ok = p_before >= class_threshold
+    after_ok = p_after >= class_threshold
+    if not before_ok and after_ok:
+        return 1
+    if before_ok and after_ok:
+        return 2
+    if before_ok and not after_ok:
+        return 3
+    return 0
+
+
 def estimate_answer_forcing_utilities(
     samples: Sequence[Dict[str, Any]],
     generate_fn: GenerateFn,
@@ -231,8 +252,13 @@ def estimate_answer_forcing_utilities(
     K: int = 4,
     max_spans_per_sample: Optional[int] = 2,
     max_span_chars: Optional[int] = None,
+    span_selection: str = "first",
     cue_types=None,
     answer_forcing_suffix: str = ANSWER_FORCING_SUFFIX,
+    post_answer_mode: str = "off",
+    post_answer_penalty: float = 0.0,
+    post_answer_threshold: float = 1.0,
+    class_threshold: float = 0.75,
     ready_threshold: float = 0.75,
     consecutive_required: int = 3,
     stop_after_ready: bool = False,
@@ -247,6 +273,7 @@ def estimate_answer_forcing_utilities(
         K: number of MC rollouts per probe point.
         max_spans_per_sample: cap to keep compute bounded.
         max_span_chars: optional truncation passed to extract_reflective_steps.
+        span_selection: selection policy when max_spans_per_sample is set.
         cue_types: optional cue allow-list passed to extract_reflective_steps.
         answer_forcing_suffix: appended to each probe prefix.
 
@@ -259,6 +286,12 @@ def estimate_answer_forcing_utilities(
         raise ValueError(f"K must be positive, got {K}")
     if max_spans_per_sample is not None and max_spans_per_sample <= 0:
         max_spans_per_sample = None
+    post_answer_mode = str(post_answer_mode).lower()
+    if post_answer_mode not in ("off", "none", "disabled", "answer_ready"):
+        raise ValueError(f"Unknown post_answer_mode: {post_answer_mode}")
+    post_answer_penalty = float(post_answer_penalty)
+    post_answer_threshold = float(post_answer_threshold)
+    class_threshold = float(class_threshold)
 
     spans_per_sample = [
         extract_reflective_steps(
@@ -266,6 +299,7 @@ def estimate_answer_forcing_utilities(
             max_spans=max_spans_per_sample,
             max_span_chars=max_span_chars,
             cue_types=cue_types,
+            span_selection=span_selection,
         )
         for sample in samples
     ]
@@ -281,6 +315,16 @@ def estimate_answer_forcing_utilities(
         p_after: float,
     ) -> ReflectiveStepUtility:
         raw_utility = p_after - p_before
+        post_answer = False
+        post_answer_score = 0.0
+        applied_post_answer_penalty = 0.0
+        utility = raw_utility
+        if post_answer_mode == "answer_ready":
+            post_answer_score = p_before
+            post_answer = post_answer_score >= post_answer_threshold
+            if post_answer:
+                applied_post_answer_penalty = post_answer_penalty
+                utility = min(utility, 0.0) - applied_post_answer_penalty
         return ReflectiveStepUtility(
             sample_idx=sidx,
             span_idx=span_idx,
@@ -290,8 +334,12 @@ def estimate_answer_forcing_utilities(
             span_end_char=sp.span_end,
             p_before=p_before,
             p_after=p_after,
-            utility=raw_utility,
+            utility=utility,
             raw_utility=raw_utility,
+            post_answer=post_answer,
+            post_answer_score=post_answer_score,
+            post_answer_penalty=applied_post_answer_penalty,
+            span_class=classify_step(p_before, p_after, class_threshold),
         )
 
     if not stop_after_ready:
