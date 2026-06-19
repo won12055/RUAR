@@ -71,6 +71,9 @@ N_GPUS="${N_GPUS:-${SLURM_GPUS_ON_NODE:-2}}"
 USE_DYNAMIC_BSZ="${USE_DYNAMIC_BSZ:-True}"
 USE_REMOVE_PADDING="${USE_REMOVE_PADDING:-True}"
 ULYSSES_SEQUENCE_PARALLEL_SIZE="${ULYSSES_SEQUENCE_PARALLEL_SIZE:-$N_GPUS}"
+ACTOR_PARAM_OFFLOAD="${ACTOR_PARAM_OFFLOAD:-True}"
+ACTOR_OPTIMIZER_OFFLOAD="${ACTOR_OPTIMIZER_OFFLOAD:-True}"
+REF_PARAM_OFFLOAD="${REF_PARAM_OFFLOAD:-True}"
 
 if [[ "$USE_REMOVE_PADDING" == "True" ]]; then
     export VERL_DISABLE_FLASH_ATTN_CE=0
@@ -171,8 +174,8 @@ python -m ruar_training.main \
     actor_rollout_ref.actor.use_kl_loss="$ACTOR_USE_KL_LOSS" \
     actor_rollout_ref.actor.ppo_max_token_len_per_gpu="$TOKEN_BUDGET" \
     actor_rollout_ref.actor.ulysses_sequence_parallel_size="$ULYSSES_SEQUENCE_PARALLEL_SIZE" \
-    actor_rollout_ref.actor.fsdp_config.param_offload=True \
-    actor_rollout_ref.actor.fsdp_config.optimizer_offload=True \
+    actor_rollout_ref.actor.fsdp_config.param_offload="$ACTOR_PARAM_OFFLOAD" \
+    actor_rollout_ref.actor.fsdp_config.optimizer_offload="$ACTOR_OPTIMIZER_OFFLOAD" \
     actor_rollout_ref.rollout.log_prob_micro_batch_size_per_gpu="$LOG_PROB_MICRO_BATCH_SIZE_PER_GPU" \
     actor_rollout_ref.rollout.log_prob_max_token_len_per_gpu="$TOKEN_BUDGET" \
     actor_rollout_ref.rollout.name=vllm \
@@ -189,7 +192,7 @@ python -m ruar_training.main \
     actor_rollout_ref.ref.log_prob_micro_batch_size_per_gpu="$REF_LOG_PROB_MICRO_BATCH_SIZE_PER_GPU" \
     actor_rollout_ref.ref.log_prob_max_token_len_per_gpu="$TOKEN_BUDGET" \
     actor_rollout_ref.ref.ulysses_sequence_parallel_size="$ULYSSES_SEQUENCE_PARALLEL_SIZE" \
-    actor_rollout_ref.ref.fsdp_config.param_offload=True \
+    actor_rollout_ref.ref.fsdp_config.param_offload="$REF_PARAM_OFFLOAD" \
     algorithm.adv_estimator=rloo \
     algorithm.reward_gt_coef="$REWARD_GT_COEF" \
     algorithm.length_penalty.enable="$LENGTH_PENALTY_ENABLE" \
