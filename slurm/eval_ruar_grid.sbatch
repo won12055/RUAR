@@ -43,7 +43,7 @@ EXPORT_RUAR_CHECKPOINT="${EXPORT_RUAR_CHECKPOINT:-1}"
 EVAL_COND_PREFIX="${EVAL_COND_PREFIX:-ruar_qwen3_8b}"
 EVAL_PROJECT_NAME="${EVAL_PROJECT_NAME:-ruar_eval}"
 EVAL_ROOT="${EVAL_ROOT:-$RUAR_ROOT/cot_dumps/eval_math_aime}"
-DATA_ROOT="${DATA_ROOT:-$RUAR_ROOT/data/eval_ruar_grid}"
+DATA_ROOT="${DATA_ROOT:-$RUAR_ROOT/data/paper_eval}"
 BENCHMARK_DATA_DIR="${BENCHMARK_DATA_DIR:-$RUAR_ROOT/data/benchmarks}"
 CKPT_EVAL_ROOT="${CKPT_EVAL_ROOT:-$RUAR_ROOT/checkpoints/eval/math_aime}"
 RESULT_CSV="${RESULT_CSV:-$RUAR_ROOT/reports/ruar_math_aime_results.csv}"
@@ -134,7 +134,7 @@ prepare_dataset() {
     local dataset_key="$1"
     local data_source="$2"
     local data_dir="$DATA_ROOT/$dataset_key"
-    if [[ -f "$data_dir/train.parquet" && -f "$data_dir/test.parquet" ]]; then
+    if [[ -f "$data_dir/test.parquet" ]]; then
         echo "[data] Using prepared benchmark: $data_dir"
         return 0
     fi
@@ -230,7 +230,16 @@ if os.path.exists(csv_path):
     with open(csv_path, newline="", encoding="utf-8") as f:
         rows = list(csv.DictReader(f))
 order_model = {"base": 0, "ruar": 1}
-order_dataset = {"math500": 0, "aime2024": 1, "aime2025": 2, "gsm8k": 3}
+order_dataset = {
+    "gsm8k": 0,
+    "math500": 1,
+    "aime2024": 2,
+    "hmmt25": 3,
+    "gpqa_diamond": 4,
+    "arc_challenge": 5,
+    "commonsenseqa": 6,
+    "aime2025": 7,
+}
 rows.sort(key=lambda r: (order_model.get(r["model"], 99), order_dataset.get(r["dataset"], 99)))
 
 with open(md_path, "w", encoding="utf-8") as f:
@@ -239,7 +248,7 @@ with open(md_path, "w", encoding="utf-8") as f:
     f.write(f"- Run tag: `{run_tag}`\n")
     f.write(f"- Eval mode: `ROLLOUT_N={rollout_n}`, `VAL_SIZE={val_size}`\n")
     f.write("- Decoding: greedy single response per problem, `temperature=0.0`, `top_p=1.0`, `validate_sample=False`\n")
-    f.write("- Scoring: DEER-compatible boxed final-answer extraction with rule-based math equivalence.\n")
+    f.write("- Scoring: boxed final-answer extraction for math; loose letter accuracy for held-out MCQ.\n")
     f.write(f"- Max prompt length: `{max_prompt_length}`\n")
     f.write(f"- Max response length: `{max_response_length}`\n")
     f.write(f"- vLLM max seq len: `{max_model_len}`, max batched tokens: `{max_num_batched_tokens}`\n")
@@ -288,7 +297,7 @@ run_eval() {
 
     echo "[eval] START model=$model_label dataset=$dataset_label model_path=$model_path"
     python -m ruar_training.main \
-        data.train_files="$data_dir/train.parquet" \
+        data.train_files="$data_dir/test.parquet" \
         data.val_files="$data_dir/test.parquet" \
         data.train_batch_size=1 \
         data.max_prompt_length="$MAX_PROMPT_LENGTH" \

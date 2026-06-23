@@ -5,7 +5,9 @@ Utility-Guided Advantage Rescaling for Efficient Reasoning**.
 
 It keeps the RUAR-specific method code, the Qwen3-8B training entrypoint, and
 paper-facing utilities in one package. Large artifacts such as checkpoints,
-datasets, logs, and rollout dumps are intentionally kept outside the repository.
+logs, and rollout dumps are intentionally kept outside the repository. The
+small Numina-3K split and paper-aligned evaluation parquet files are included
+under `data/`.
 
 ## Contents
 
@@ -23,10 +25,16 @@ datasets, logs, and rollout dumps are intentionally kept outside the repository.
 - `verl/`: vendored training backend used by `ruar_training`.
 - `scripts/train_ruar_qwen3_8b.sh`: submits the Qwen3-8B RUAR training run.
 - `slurm/train_ruar_qwen3_8b.sbatch`: Slurm job body for Qwen3-8B training.
-- `scripts/prepare_numina3k.py`: prepares the Numina-3K training parquet split
-  used by the Qwen3-8B launcher.
+- `data/numina_3k/`: Numina-3K train/validation parquet files used by the
+  Qwen3-8B launcher.
+- `data/paper_eval/`: paper-aligned `test.parquet` files for the seven
+  benchmark suite.
+- `scripts/prepare_numina3k.py`: optional utility to rebuild the Numina-3K
+  training parquet split.
 - `scripts/eval_ruar_math_aime.sh`: evaluates base and RUAR checkpoints on
   MATH500 and AIME2024.
+- `scripts/eval_ruar_7bench.sh`: evaluates the paper-style seven benchmark
+  suite, including held-out MCQ prompts.
 - `scripts/prepare_eval_benchmark.py`: converts local benchmark JSONL files to
   the RUAR parquet schema for evaluation.
 - `scripts/export_fsdp_checkpoint.py`: exports a saved RUAR FSDP actor
@@ -84,12 +92,10 @@ The Qwen3-8B launcher runs the training code included in this repository:
 `scripts/train_ruar_qwen3_8b.sh` submits `slurm/train_ruar_qwen3_8b.sbatch`,
 which starts `python -m ruar_training.main`.
 
-Set only local inputs before launching:
+Set the local model path before launching:
 
 ```bash
 export MODEL_PATH=/path/to/Qwen3-8B
-export TRAIN_FILE=/path/to/train.parquet
-export VAL_FILE=/path/to/val.parquet
 ```
 
 If `TRAIN_FILE` and `VAL_FILE` are not set, the launcher expects
@@ -97,7 +103,7 @@ If `TRAIN_FILE` and `VAL_FILE` are not set, the launcher expects
 repository. Training parquet rows should provide `prompt`, `data_source`, and
 `reward_info.ground_truth`.
 
-To prepare that split from NuminaMath-CoT through the included script:
+To rebuild that split from NuminaMath-CoT through the included script:
 
 ```bash
 python scripts/prepare_numina3k.py --out-dir data/numina_3k
@@ -116,7 +122,6 @@ python scripts/prepare_numina3k.py \
 ```bash
 cd RUAR
 export MODEL_PATH=/path/to/Qwen3-8B
-export PREPARE_TRAIN_DATA=1  # optional; prepares data/numina_3k if missing
 bash scripts/train_ruar_qwen3_8b.sh
 ```
 
@@ -128,10 +133,8 @@ SBATCH_DEPENDENCY=afterok:<job_id> bash scripts/train_ruar_qwen3_8b.sh
 
 ## Evaluate
 
-Place benchmark JSONL files under `data/benchmarks/<dataset>/test.jsonl`, for
-example `data/benchmarks/math500/test.jsonl` and
-`data/benchmarks/aime2024/test.jsonl`, or set `BENCHMARK_DATA_DIR` to another
-directory with the same layout. Then submit:
+The paper-aligned evaluation `test.parquet` files are included under
+`data/paper_eval/`. Then submit:
 
 ```bash
 cd RUAR
@@ -140,10 +143,14 @@ export CKPT_ROOT=/path/to/ruar/checkpoint/root
 bash scripts/eval_ruar_math_aime.sh
 ```
 
-The evaluation launcher is self-contained within this repository. It prepares
+The evaluation launcher is self-contained within this repository. It reads
 evaluation parquet files with `reward_info.ground_truth`, exports
 `global_step_50/actor` to `actor/huggingface` when needed, and runs greedy
 single-sample decoding with `MAX_RESPONSE_LENGTH=32768`.
+
+```bash
+bash scripts/eval_ruar_7bench.sh
+```
 
 After the eval job writes `reports/ruar_math_aime_results.csv`:
 

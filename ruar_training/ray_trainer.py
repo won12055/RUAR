@@ -226,26 +226,30 @@ class RayRUARTrainer(RayPPOTrainer):
 
     def _create_dataloader(self):
         from torch.utils.data import DataLoader, RandomSampler, SequentialSampler
-        self.train_dataset = RLHFDataset(parquet_files=self.config.data.train_files,
-                                         tokenizer=self.tokenizer,
-                                         prompt_key=self.config.data.prompt_key,
-                                         max_prompt_length=self.config.data.max_prompt_length,
-                                         filter_prompts=True,
-                                         return_raw_chat=self.config.data.get('return_raw_chat', False),
-                                         truncation=self.config.data.truncation)
-        # use sampler for better ckpt resume
-        if self.config.data.shuffle:
-            train_dataloader_generator = torch.Generator()
-            train_dataloader_generator.manual_seed(self.config.data.get('seed', 1))
-            sampler = RandomSampler(data_source=self.train_dataset, generator=train_dataloader_generator)
-        else:
-            sampler = SequentialSampler(data_source=self.train_dataset)
+        val_only = self.config.trainer.get('val_only', False)
+        self.train_dataset = None
+        self.train_dataloader = None
+        if not val_only:
+            self.train_dataset = RLHFDataset(parquet_files=self.config.data.train_files,
+                                             tokenizer=self.tokenizer,
+                                             prompt_key=self.config.data.prompt_key,
+                                             max_prompt_length=self.config.data.max_prompt_length,
+                                             filter_prompts=True,
+                                             return_raw_chat=self.config.data.get('return_raw_chat', False),
+                                             truncation=self.config.data.truncation)
+            # use sampler for better ckpt resume
+            if self.config.data.shuffle:
+                train_dataloader_generator = torch.Generator()
+                train_dataloader_generator.manual_seed(self.config.data.get('seed', 1))
+                sampler = RandomSampler(data_source=self.train_dataset, generator=train_dataloader_generator)
+            else:
+                sampler = SequentialSampler(data_source=self.train_dataset)
 
-        self.train_dataloader = DataLoader(dataset=self.train_dataset,
-                                           batch_size=self.config.data.train_batch_size,
-                                           drop_last=True,
-                                           collate_fn=collate_fn,
-                                           sampler=sampler)
+            self.train_dataloader = DataLoader(dataset=self.train_dataset,
+                                               batch_size=self.config.data.train_batch_size,
+                                               drop_last=True,
+                                               collate_fn=collate_fn,
+                                               sampler=sampler)
 
         self.val_dataset = RLHFDataset(parquet_files=self.config.data.val_files,
                                        tokenizer=self.tokenizer,
@@ -260,13 +264,20 @@ class RayRUARTrainer(RayPPOTrainer):
                                          drop_last=True,
                                          collate_fn=collate_fn)
 
-        assert len(self.train_dataloader) >= 1
+        if not val_only:
+            assert len(self.train_dataloader) >= 1
         assert len(self.val_dataloader) >= 1
 
-        print(f'Size of train dataloader: {len(self.train_dataloader)}')
+        if not val_only:
+            print(f'Size of train dataloader: {len(self.train_dataloader)}')
+        else:
+            print('Validation-only mode: train dataloader is not created.')
         print(f'Size of val dataloader: {len(self.val_dataloader)}')
 
-        total_training_steps = len(self.train_dataloader) * self.config.trainer.total_epochs
+        if val_only:
+            total_training_steps = self.config.trainer.total_training_steps or 1
+        else:
+            total_training_steps = len(self.train_dataloader) * self.config.trainer.total_epochs
 
         if self.config.trainer.total_training_steps is not None:
             total_training_steps = self.config.trainer.total_training_steps

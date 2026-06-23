@@ -112,13 +112,13 @@ flash-attn 2.8.3
 Before launching Qwen3-8B training, prepare:
 
 - `MODEL_PATH`: local path to the Qwen3-8B Hugging Face checkpoint.
-- Training and validation parquet files for the math training split used by the
-  launcher.
+- Optional custom training and validation parquet files. The default Numina-3K
+  files are already included under `data/numina_3k`.
 - Rows containing `prompt`, `data_source`, and `reward_info.ground_truth`.
   The included rule-based verifier handles the supported math data sources.
 - Writable output directories for checkpoints, COT dumps, probe dumps, and logs.
 
-The repository includes `scripts/prepare_numina3k.py` for preparing the
+The repository includes `scripts/prepare_numina3k.py` only for rebuilding the
 Numina-3K split from `AI-MO/NuminaMath-CoT` or from a local JSONL export. The
 launcher can run it before submission when `PREPARE_TRAIN_DATA=1`.
 
@@ -127,7 +127,7 @@ Generated artifacts are intentionally ignored by `.gitignore`:
 ```text
 checkpoints/
 cot_dumps/
-data/
+data/* except `data/numina_3k` and `data/paper_eval`
 logs/
 outputs/
 wandb/
@@ -143,13 +143,15 @@ Prepare:
 - `BASE_MODEL`: local path or model id for the base Qwen3-8B checkpoint.
 - `CKPT_ROOT`: RUAR checkpoint root containing `global_step_50/actor`, or
   `RUAR_MODEL_PATH`: a merged Hugging Face checkpoint to evaluate directly.
-- Benchmark JSONL files under `data/benchmarks/<dataset>/test.jsonl`, where the
-  public MATH/AIME reproduction expects `math500` and `aime2024`.
+- Paper-aligned evaluation `test.parquet` files are included under `data/paper_eval`.
+  They cover GSM8K, MATH500, AIME2024, HMMT25, GPQA-Diamond, ARC-Challenge, and
+  CommonsenseQA. The held-out MCQ files use boxed-choice prompts and loose
+  letter accuracy.
 
-The benchmark JSONL rows should contain a question field (`problem`,
-`question`, `Question`, or `input`) and an answer field (`answer` or
-`final_answer`). `scripts/prepare_eval_benchmark.py` converts these rows into
-parquet files with `prompt`, `data_source`, and `reward_info.ground_truth`.
+If you want to rebuild evaluation data from JSONL files, place rows under
+`data/benchmarks/<dataset>/test.jsonl` and run
+`scripts/prepare_eval_benchmark.py`. The included `data/paper_eval` test files
+are the default for reproduction.
 
 The default evaluation uses greedy single-response decoding and
 `MAX_RESPONSE_LENGTH=32768`, matching the paper evaluation setting.
@@ -163,8 +165,6 @@ Launch the included Slurm training job:
 
 ```bash
 export MODEL_PATH=/path/to/Qwen3-8B
-# Optional: prepare data/numina_3k/train.parquet and val.parquet if missing.
-export PREPARE_TRAIN_DATA=1
 # Optional if the files are not under data/numina_3k/.
 export TRAIN_FILE=/path/to/train.parquet
 export VAL_FILE=/path/to/val.parquet

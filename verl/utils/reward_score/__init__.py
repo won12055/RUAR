@@ -12,13 +12,22 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 def _default_compute_score(data_source, solution_str, ground_truth, extra_info=None):
+    data_source_str = str(data_source)
     if data_source == 'openai/gsm8k':
         from . import gsm8k
         res = gsm8k.compute_score(solution_str, ground_truth)
-    elif data_source in ['gsm8k', 'math500', 'aime2024', 'aime2025'] or str(data_source).startswith('boxed_math/'):
+    elif data_source in ['gsm8k', 'math500', 'aime2024', 'aime2025'] or data_source_str.startswith('boxed_math/'):
         from . import boxed_math
-        data_name = str(data_source).split('/', 1)[-1]
+        data_name = data_source_str.split('/', 1)[-1]
         res = boxed_math.compute_score(solution_str, ground_truth, data_name=data_name)
+    elif data_source_str.startswith('loose_mcq/'):
+        data_name = data_source_str.split('/', 1)[-1]
+        if data_name in ['gpqa', 'gpqa_diamond', 'arc_challenge', 'commonsenseqa', 'openbookqa', 'mmlu', 'hellaswag']:
+            from . import loose_letter_mcq
+            res = loose_letter_mcq.compute_score(solution_str, ground_truth, extra_info=extra_info)
+        else:
+            from . import boxed_math
+            res = boxed_math.compute_score(solution_str, ground_truth, data_name=data_name)
     elif data_source in ['lighteval/MATH', 'DigitalLearningGmbH/MATH-lighteval']:
         from . import math
         res = math.compute_score(solution_str, ground_truth)
@@ -34,7 +43,7 @@ def _default_compute_score(data_source, solution_str, ground_truth, extra_info=N
     elif data_source in ['deepscaler']:
         from . import hf_math_verify
         res = hf_math_verify.compute_score(solution_str, ground_truth)
-    elif data_source.startswith('mcq/'):
+    elif data_source_str.startswith('mcq/'):
         from . import mcq
         res = mcq.compute_score(solution_str, ground_truth, extra_info=extra_info)
     else:
