@@ -146,7 +146,9 @@ bash scripts/eval_ruar_math_aime.sh
 The evaluation launcher is self-contained within this repository. It reads
 evaluation parquet files with `reward_info.ground_truth`, exports
 `global_step_50/actor` to `actor/huggingface` when needed, and runs greedy
-single-sample decoding with `MAX_RESPONSE_LENGTH=32768`.
+single-sample decoding with `MAX_RESPONSE_LENGTH=32768`. The held-out MCQ
+benchmarks use the `mcq/*` data sources and boxed option-letter prompts used by
+the Qwen3-8B reproduction runs.
 
 ```bash
 bash scripts/eval_ruar_7bench.sh

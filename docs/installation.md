@@ -145,8 +145,8 @@ Prepare:
   `RUAR_MODEL_PATH`: a merged Hugging Face checkpoint to evaluate directly.
 - Paper-aligned evaluation `test.parquet` files are included under `data/paper_eval`.
   They cover GSM8K, MATH500, AIME2024, HMMT25, GPQA-Diamond, ARC-Challenge, and
-  CommonsenseQA. The held-out MCQ files use boxed-choice prompts and loose
-  letter accuracy.
+  CommonsenseQA. The held-out MCQ files use `mcq/*` data sources, boxed
+  option-letter prompts, and loose letter accuracy as the primary metric.
 
 If you want to rebuild evaluation data from JSONL files, place rows under
 `data/benchmarks/<dataset>/test.jsonl` and run

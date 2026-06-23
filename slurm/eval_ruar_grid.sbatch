@@ -238,7 +238,6 @@ order_dataset = {
     "gpqa_diamond": 4,
     "arc_challenge": 5,
     "commonsenseqa": 6,
-    "aime2025": 7,
 }
 rows.sort(key=lambda r: (order_model.get(r["model"], 99), order_dataset.get(r["dataset"], 99)))
 

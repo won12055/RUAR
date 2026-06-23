@@ -26,12 +26,12 @@ def _normalize_label(candidate: str | None, allowed: list[str]) -> str | None:
         return None
     candidate = _TEXT_RE.sub(r"\1", candidate)
     candidate = candidate.strip().upper()
+    if len(candidate) >= 2 and candidate[0] == "(" and candidate[-1] == ")":
+        candidate = candidate[1:-1].strip()
     if not candidate:
         return None
-    if re.fullmatch(r"[0-9]+", candidate):
-        idx = int(candidate)
-        if 0 <= idx <= 25:
-            candidate = chr(ord("A") + idx)
+    if allowed and candidate in allowed:
+        return candidate
     if allowed and candidate not in allowed:
         return None
     return candidate

@@ -1,7 +1,8 @@
 #!/usr/bin/env python3
 """Prepare RUAR evaluation parquet files from benchmark sources."""
 
-# Held-out MCQ evaluation uses the paper's boxed-choice prompt convention.
+# Held-out MCQ evaluation uses the boxed option-letter prompt used by the
+# Qwen3-8B reproduction runs.
 
 from __future__ import annotations
 
@@ -21,7 +22,7 @@ if str(REPO_ROOT) not in sys.path:
 
 
 SYSTEM_PROMPT_MATH = "Please reason step by step, and put your final answer within \\boxed{}."
-SYSTEM_PROMPT_MCQ = "Please reason step by step, and put your final answer choice within \\boxed{}."
+SYSTEM_PROMPT_MCQ = "Please reason step by step, and put only the final option letter within \\boxed{}."
 ANSWER_FORCING_SUFFIX = "\n**Final Answer**\n\\boxed"
 LETTERS = "ABCDEFGHIJKLMNOPQRSTUVWXYZ"
 
@@ -30,8 +31,6 @@ ALIASES = {
     "math500": ("math500", "math"),
     "aime": ("aime", "aime2024"),
     "aime2024": ("aime2024", "aime"),
-    "aime2025": ("aime2025", "aime25"),
-    "aime25": ("aime25", "aime2025"),
     "gsm8k": ("gsm8k",),
     "hmmt25": ("hmmt25",),
     "gpqa_diamond": ("gpqa_diamond", "gpqa"),
@@ -39,6 +38,15 @@ ALIASES = {
     "commonsenseqa": ("commonsenseqa",),
 }
 MCQ_DATASETS = {"gpqa_diamond", "arc_challenge", "commonsenseqa"}
+DEFAULT_DATA_SOURCES = {
+    "gsm8k": "boxed_math/gsm8k",
+    "math500": "boxed_math/math500",
+    "aime2024": "boxed_math/aime2024",
+    "hmmt25": "boxed_math/hmmt25",
+    "gpqa_diamond": "mcq/gpqa_diamond",
+    "arc_challenge": "mcq/arc_challenge",
+    "commonsenseqa": "mcq/commonsenseqa",
+}
 
 
 def load_jsonl(path: Path) -> list[dict[str, Any]]:
@@ -131,11 +139,11 @@ def mcq_question_text(row: dict[str, Any], dataset: str) -> str:
         return (
             f"{question}\n\n"
             f"{_format_choices(choices)}\n\n"
-            "Choose the single best answer. Put only the final answer choice letter inside \\boxed{}."
+            "Choose the single best answer. Put only the final option letter inside \\boxed{}."
         )
     return (
         f"{question}\n\n"
-        "Choose the single best answer. Put only the final answer choice letter inside \\boxed{}."
+        "Choose the single best answer. Put only the final option letter inside \\boxed{}."
     )
 
 
@@ -197,7 +205,7 @@ def load_source_rows(args: argparse.Namespace) -> list[dict[str, Any]]:
     raise FileNotFoundError(
         f"Could not find JSONL for dataset={args.dataset!r}. Looked for:\n{rendered}\n"
         "Set --input-jsonl explicitly or place the benchmark under --data-dir. "
-        "For paper-compatible GPQA-Diamond, provide the paper-style gpqa_diamond/test.jsonl export."
+        "For GPQA-Diamond, provide the gpqa_diamond/test.jsonl export used by the evaluation protocol."
     )
 
 
@@ -304,7 +312,7 @@ def main() -> None:
         exclude_train_from_val=args.exclude_train_from_val,
     )
 
-    data_source = args.data_source or args.dataset
+    data_source = args.data_source or DEFAULT_DATA_SOURCES.get(args.dataset, args.dataset)
     train = to_rows(train_rows, dataset=args.dataset, data_source=data_source)
     val = to_rows(val_rows, dataset=args.dataset, data_source=data_source)
 

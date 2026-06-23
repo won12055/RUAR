@@ -16,18 +16,10 @@ def _default_compute_score(data_source, solution_str, ground_truth, extra_info=N
     if data_source == 'openai/gsm8k':
         from . import gsm8k
         res = gsm8k.compute_score(solution_str, ground_truth)
-    elif data_source in ['gsm8k', 'math500', 'aime2024', 'aime2025'] or data_source_str.startswith('boxed_math/'):
+    elif data_source in ['gsm8k', 'math500', 'aime2024'] or data_source_str.startswith('boxed_math/'):
         from . import boxed_math
         data_name = data_source_str.split('/', 1)[-1]
         res = boxed_math.compute_score(solution_str, ground_truth, data_name=data_name)
-    elif data_source_str.startswith('loose_mcq/'):
-        data_name = data_source_str.split('/', 1)[-1]
-        if data_name in ['gpqa', 'gpqa_diamond', 'arc_challenge', 'commonsenseqa', 'openbookqa', 'mmlu', 'hellaswag']:
-            from . import loose_letter_mcq
-            res = loose_letter_mcq.compute_score(solution_str, ground_truth, extra_info=extra_info)
-        else:
-            from . import boxed_math
-            res = boxed_math.compute_score(solution_str, ground_truth, data_name=data_name)
     elif data_source in ['lighteval/MATH', 'DigitalLearningGmbH/MATH-lighteval']:
         from . import math
         res = math.compute_score(solution_str, ground_truth)

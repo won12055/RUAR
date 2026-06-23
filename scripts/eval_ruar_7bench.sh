@@ -7,7 +7,7 @@ RUAR_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
 export RUAR_ROOT
 
 export DATASET_FILTER="${DATASET_FILTER:-gsm8k,math500,aime2024,hmmt25,gpqa_diamond,arc_challenge,commonsenseqa}"
-export DATASET_SPECS="${DATASET_SPECS:-gsm8k|gsm8k|boxed_math/gsm8k,math500|math500|boxed_math/math500,aime2024|aime2024|boxed_math/aime2024,hmmt25|hmmt25|boxed_math/hmmt25,gpqa_diamond|gpqa_diamond|loose_mcq/gpqa_diamond,arc_challenge|arc_challenge|loose_mcq/arc_challenge,commonsenseqa|commonsenseqa|loose_mcq/commonsenseqa}"
+export DATASET_SPECS="${DATASET_SPECS:-gsm8k|gsm8k|boxed_math/gsm8k,math500|math500|boxed_math/math500,aime2024|aime2024|boxed_math/aime2024,hmmt25|hmmt25|boxed_math/hmmt25,gpqa_diamond|gpqa_diamond|mcq/gpqa_diamond,arc_challenge|arc_challenge|mcq/arc_challenge,commonsenseqa|commonsenseqa|mcq/commonsenseqa}"
 export EVAL_ROOT="${EVAL_ROOT:-$RUAR_ROOT/cot_dumps/eval_7bench}"
 export DATA_ROOT="${DATA_ROOT:-$RUAR_ROOT/data/paper_eval}"
 export CKPT_EVAL_ROOT="${CKPT_EVAL_ROOT:-$RUAR_ROOT/checkpoints/eval/7bench}"
