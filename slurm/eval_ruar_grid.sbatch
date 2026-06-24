@@ -9,7 +9,29 @@
 
 set -euo pipefail
 
-RUAR_ROOT="${RUAR_ROOT:-$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)}"
+resolve_ruar_root() {
+    if [[ -n "${RUAR_ROOT:-}" ]]; then
+        cd "$RUAR_ROOT" && pwd
+        return
+    fi
+    if [[ -n "${SLURM_SUBMIT_DIR:-}" && -d "$SLURM_SUBMIT_DIR/slurm" && -d "$SLURM_SUBMIT_DIR/ruar_training" ]]; then
+        cd "$SLURM_SUBMIT_DIR" && pwd
+        return
+    fi
+
+    local script_root
+    script_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+    if [[ -d "$script_root/slurm" && -d "$script_root/ruar_training" ]]; then
+        echo "$script_root"
+        return
+    fi
+
+    echo "Could not locate RUAR_ROOT. Submit from the RUAR directory or set RUAR_ROOT=/path/to/RUAR." >&2
+    return 2
+}
+
+RUAR_ROOT="$(resolve_ruar_root)" || exit 2
+export RUAR_ROOT
 cd "$RUAR_ROOT"
 
 if [[ -n "${RUAR_VENV:-}" ]]; then
@@ -28,6 +50,18 @@ export WANDB_MODE="${WANDB_MODE:-offline}"
 export VERL_DISABLE_TORCH_COMPILE="${VERL_DISABLE_TORCH_COMPILE:-1}"
 export VERL_DISABLE_FLASH_ATTN_CE="${VERL_DISABLE_FLASH_ATTN_CE:-1}"
 export VERL_ATTENTION_IMPLEMENTATION="${VERL_ATTENTION_IMPLEMENTATION:-sdpa}"
+
+PYTHON_BIN="${PYTHON_BIN:-}"
+if [[ -z "$PYTHON_BIN" ]]; then
+    if command -v python >/dev/null 2>&1; then
+        PYTHON_BIN=python
+    elif command -v python3 >/dev/null 2>&1; then
+        PYTHON_BIN=python3
+    else
+        echo "Missing Python executable: set PYTHON_BIN or activate RUAR_VENV." >&2
+        exit 2
+    fi
+fi
 
 RUN_TAG="${RUN_TAG:-ruar_qwen3_8b_numina_3k_50step}"
 CKPT_COND="${CKPT_COND:-ruar_wait_rloo}"
@@ -118,7 +152,7 @@ resolve_ruar_model() {
     fi
 
     if [[ "$EXPORT_RUAR_CHECKPOINT" == "1" ]]; then
-        python "$RUAR_ROOT/scripts/export_fsdp_checkpoint.py" --local-dir "$actor_dir" >&2
+        "$PYTHON_BIN" "$RUAR_ROOT/scripts/export_fsdp_checkpoint.py" --local-dir "$actor_dir" >&2
         if has_hf_weights "$hf_dir"; then
             echo "$hf_dir"
             return 0
@@ -140,7 +174,7 @@ prepare_dataset() {
     fi
 
     mkdir -p "$data_dir"
-    python "$RUAR_ROOT/scripts/prepare_eval_benchmark.py" \
+    "$PYTHON_BIN" "$RUAR_ROOT/scripts/prepare_eval_benchmark.py" \
         --dataset "$dataset_key" \
         --data-source "$data_source" \
         --data-dir "$BENCHMARK_DATA_DIR" \
@@ -153,7 +187,7 @@ append_result() {
     local model_label="$1"
     local dataset_label="$2"
     local cot_path="$3"
-    python - "$RESULT_CSV" "$model_label" "$dataset_label" "$cot_path" <<'PY'
+    "$PYTHON_BIN" - "$RESULT_CSV" "$model_label" "$dataset_label" "$cot_path" <<'PY'
 import csv
 import json
 import os
@@ -201,7 +235,7 @@ write_report() {
     if [[ "$WRITE_PROGRESS_REPORT" != "1" ]]; then
         return 0
     fi
-    python - "$RESULT_CSV" "$REPORT_MD" "$RUN_TAG" "$ROLLOUT_N" "$VAL_SIZE" "$MAX_PROMPT_LENGTH" "$MAX_RESPONSE_LENGTH" "$MAX_MODEL_LEN" "$MAX_NUM_BATCHED_TOKENS" "$MAX_NUM_SEQS" "$TOKEN_BUDGET" "$ROLLOUT_TEMPERATURE" "$ROLLOUT_TOP_P" "$VALIDATE_SAMPLE" "${SLURM_JOB_ID:-unknown}" <<'PY'
+    "$PYTHON_BIN" - "$RESULT_CSV" "$REPORT_MD" "$RUN_TAG" "$ROLLOUT_N" "$VAL_SIZE" "$MAX_PROMPT_LENGTH" "$MAX_RESPONSE_LENGTH" "$MAX_MODEL_LEN" "$MAX_NUM_BATCHED_TOKENS" "$MAX_NUM_SEQS" "$TOKEN_BUDGET" "$ROLLOUT_TEMPERATURE" "$ROLLOUT_TOP_P" "$VALIDATE_SAMPLE" "${SLURM_JOB_ID:-unknown}" <<'PY'
 import csv
 import datetime as dt
 import os
@@ -295,7 +329,7 @@ run_eval() {
     fi
 
     echo "[eval] START model=$model_label dataset=$dataset_label model_path=$model_path"
-    python -m ruar_training.main \
+    "$PYTHON_BIN" -m ruar_training.main \
         data.train_files="$data_dir/test.parquet" \
         data.val_files="$data_dir/test.parquet" \
         data.train_batch_size=1 \

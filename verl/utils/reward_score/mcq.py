@@ -8,6 +8,11 @@ from typing import Any
 
 _BOXED_RE = re.compile(r"\\boxed\s*(?:\{([^{}]+)\}|([A-Za-z0-9]))")
 _TEXT_RE = re.compile(r"\\text\{([^{}]+)\}")
+_PAPER_LOOSE_PATTERNS = [
+    re.compile(r"(?:final\s+)?(?:answer|choice|option)\s*(?:is|:|=|would be|should be)?\s*\(?\s*([A-H])\s*\)?", re.I),
+    re.compile(r"\b(?:choose|select|pick)\s*(?:option\s*)?\(?\s*([A-H])\s*\)?", re.I),
+    re.compile(r"\bso\s+(?:the\s+)?(?:answer|choice)\s*(?:is|:)\s*\(?\s*([A-H])\s*\)?", re.I),
+]
 
 
 def _allowed_labels(extra_info: Any) -> list[str]:
@@ -62,41 +67,65 @@ def extract_boxed_choice(solution_str: str, extra_info: Any = None) -> str | Non
     return _normalize_label(match.group(1) or match.group(2), allowed=allowed)
 
 
+def _extract_boxed_text(solution_str: str) -> str | None:
+    solution_str = str(solution_str)
+    idx = solution_str.rfind("boxed")
+    if idx < 0:
+        return None
+
+    answer = solution_str[idx + len("boxed") :]
+    if not answer:
+        return None
+
+    if answer[0] == "{":
+        depth = 1
+        chars = []
+        for ch in answer[1:]:
+            if ch == "{":
+                depth += 1
+                chars.append(ch)
+            elif ch == "}":
+                depth -= 1
+                if depth == 0:
+                    break
+                chars.append(ch)
+            else:
+                chars.append(ch)
+        if depth != 0:
+            return None
+        extracted = "".join(chars)
+    else:
+        extracted = answer.split("$")[0]
+
+    extracted = extracted.strip().rstrip(".").rstrip("/")
+    return extracted or None
+
+
+def _first_letter_a_to_h(text: str | None) -> str | None:
+    if not text:
+        return None
+    match = re.search(r"[A-H]", str(text).upper())
+    return match.group(0) if match else None
+
+
 def extract_loose_choice(solution_str: str, extra_info: Any = None) -> str | None:
-    allowed = _allowed_labels(extra_info)
-    strict = extract_boxed_choice(solution_str, extra_info=extra_info)
-    if strict is not None:
-        return strict
+    del extra_info
 
-    tail = solution_str[-800:]
-    upper_tail = _TEXT_RE.sub(r"\1", tail).upper()
-    allowed_pat = "".join(allowed) if allowed else "A-J"
-    patterns = [
-        rf"FINAL ANSWER[^A-Z0-9]{{0,24}}([{allowed_pat}])\b",
-        rf"ANSWER[^A-Z0-9]{{0,24}}(?:IS|:)?[^A-Z0-9]{{0,12}}([{allowed_pat}])\b",
-        rf"(?:OPTION|CHOICE)[^A-Z0-9]{{0,12}}([{allowed_pat}])\b",
-        rf"\(([{allowed_pat}])\)",
-    ]
-    for pattern in patterns:
-        matches = re.findall(pattern, upper_tail)
-        if matches:
-            candidate = _normalize_label(matches[-1], allowed=allowed)
-            if candidate is not None:
-                return candidate
+    boxed = _extract_boxed_text(solution_str)
+    boxed_letter = _first_letter_a_to_h(boxed)
+    if boxed_letter is not None:
+        return boxed_letter
 
-    standalone = re.findall(rf"\b([{allowed_pat}])\b", upper_tail)
+    tail = str(solution_str)[-1200:]
+    matches: list[tuple[int, str]] = []
+    for pattern in _PAPER_LOOSE_PATTERNS:
+        matches.extend((match.start(), match.group(1).upper()) for match in pattern.finditer(tail))
+    if matches:
+        return sorted(matches)[-1][1]
+
+    standalone = list(re.finditer(r"(?<![A-Za-z])([A-H])(?![A-Za-z])", str(solution_str)[-200:]))
     if standalone:
-        candidate = _normalize_label(standalone[-1], allowed=allowed)
-        if candidate is not None:
-            return candidate
-
-    if isinstance(extra_info, dict):
-        choices = extra_info.get("choice_text_by_label") or {}
-        normalized_tail = " ".join(upper_tail.split())
-        for label, choice_text in choices.items():
-            choice_text_norm = " ".join(str(choice_text).upper().split())
-            if choice_text_norm and choice_text_norm in normalized_tail:
-                return _normalize_label(str(label), allowed=allowed)
+        return standalone[-1].group(1).upper()
 
     return None
 
@@ -108,8 +137,9 @@ def compute_strict_score(solution_str: str, ground_truth: Any, extra_info: Any =
 
 
 def compute_loose_score(solution_str: str, ground_truth: Any, extra_info: Any = None) -> float:
-    gold = _normalize_gold(ground_truth, extra_info=extra_info)
-    pred = extract_loose_choice(solution_str, extra_info=extra_info)
+    del extra_info
+    gold = _first_letter_a_to_h(str(ground_truth).strip())
+    pred = extract_loose_choice(solution_str)
     return 1.0 if gold is not None and pred == gold else 0.0
 
 

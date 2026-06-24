@@ -10,7 +10,29 @@
 
 set -euo pipefail
 
-RUAR_ROOT="${RUAR_ROOT:-$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)}"
+resolve_ruar_root() {
+    if [[ -n "${RUAR_ROOT:-}" ]]; then
+        cd "$RUAR_ROOT" && pwd
+        return
+    fi
+    if [[ -n "${SLURM_SUBMIT_DIR:-}" && -d "$SLURM_SUBMIT_DIR/slurm" && -d "$SLURM_SUBMIT_DIR/ruar_training" ]]; then
+        cd "$SLURM_SUBMIT_DIR" && pwd
+        return
+    fi
+
+    local script_root
+    script_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+    if [[ -d "$script_root/slurm" && -d "$script_root/ruar_training" ]]; then
+        echo "$script_root"
+        return
+    fi
+
+    echo "Could not locate RUAR_ROOT. Submit from the RUAR directory or set RUAR_ROOT=/path/to/RUAR." >&2
+    return 2
+}
+
+RUAR_ROOT="$(resolve_ruar_root)" || exit 2
+export RUAR_ROOT
 cd "$RUAR_ROOT"
 
 if [[ -n "${RUAR_VENV:-}" ]]; then
@@ -112,6 +134,7 @@ ADVANTAGE_SCALING_PRE_READY_NEGATIVE_GAMMA="${ADVANTAGE_SCALING_PRE_READY_NEGATI
 ADVANTAGE_SCALING_APPLY_TO_ALL_WAIT="${ADVANTAGE_SCALING_APPLY_TO_ALL_WAIT:-True}"
 
 REFLECTION_STOP_AFTER_READY="${REFLECTION_STOP_AFTER_READY:-True}"
+REFLECTION_ANSWER_ROLLOUTS="${REFLECTION_ANSWER_ROLLOUTS:-4}"
 # 0 means no cap: use all extracted Wait-start spans until
 # REFLECTION_STOP_AFTER_READY stops further answer-forcing probes.
 REFLECTION_MAX_SPANS_PER_SAMPLE="${REFLECTION_MAX_SPANS_PER_SAMPLE:-0}"
@@ -146,7 +169,7 @@ echo "[RUAR] train_file=$TRAIN_FILE val_file=$VAL_FILE"
 echo "[RUAR] prompt=$MAX_PROMPT_LENGTH response=$MAX_RESPONSE_LENGTH model_len=$MAX_MODEL_LEN rollout_n=$ROLLOUT_N"
 echo "[RUAR] length_penalty=$LENGTH_PENALTY_ENABLE coef=$LENGTH_PENALTY_COEF target=$LENGTH_PENALTY_TARGET mode=$LENGTH_PENALTY_MODE cap=$LENGTH_PENALTY_CAP std_floor=$LENGTH_PENALTY_STD_FLOOR only_correct=$LENGTH_PENALTY_ONLY_CORRECT"
 echo "[RUAR] advantage_scaling=$ADVANTAGE_SCALING_ENABLE ready_threshold=$ADVANTAGE_SCALING_READY_THRESHOLD consecutive=$ADVANTAGE_SCALING_CONSECUTIVE_REQUIRED scope=$ADVANTAGE_SCALING_SCOPE"
-echo "[RUAR] stop_after_ready=$REFLECTION_STOP_AFTER_READY max_probe_prompt=$MAX_PROBE_PROMPT_LENGTH"
+echo "[RUAR] probe_answer_rollouts=$REFLECTION_ANSWER_ROLLOUTS stop_after_ready=$REFLECTION_STOP_AFTER_READY max_probe_prompt=$MAX_PROBE_PROMPT_LENGTH"
 
 python - <<'PY'
 from importlib.metadata import version
@@ -216,7 +239,7 @@ python -m ruar_training.main \
     algorithm.advantage_scaling.apply_to_all_wait="$ADVANTAGE_SCALING_APPLY_TO_ALL_WAIT" \
     reflection.enable=True \
     reflection.cue_types="['wait']" \
-    reflection.answer_rollouts=4 \
+    reflection.answer_rollouts="$REFLECTION_ANSWER_ROLLOUTS" \
     reflection.max_spans_per_sample="$REFLECTION_MAX_SPANS_PER_SAMPLE" \
     reflection.span_selection="$REFLECTION_SPAN_SELECTION" \
     reflection.max_answer_tokens="$REFLECTION_MAX_ANSWER_TOKENS" \
