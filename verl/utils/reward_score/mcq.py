@@ -8,11 +8,8 @@ from typing import Any
 
 _BOXED_RE = re.compile(r"\\boxed\s*(?:\{([^{}]+)\}|([A-Za-z0-9]))")
 _TEXT_RE = re.compile(r"\\text\{([^{}]+)\}")
-_PAPER_LOOSE_PATTERNS = [
-    re.compile(r"(?:final\s+)?(?:answer|choice|option)\s*(?:is|:|=|would be|should be)?\s*\(?\s*([A-H])\s*\)?", re.I),
-    re.compile(r"\b(?:choose|select|pick)\s*(?:option\s*)?\(?\s*([A-H])\s*\)?", re.I),
-    re.compile(r"\bso\s+(?:the\s+)?(?:answer|choice)\s*(?:is|:)\s*\(?\s*([A-H])\s*\)?", re.I),
-]
+_SPECIAL_TOKEN_RE = re.compile(r"<[|｜][^|｜>]+[|｜]>")
+_DEFAULT_LOOSE_LABELS = list("ABCDEFGH")
 
 
 def _allowed_labels(extra_info: Any) -> list[str]:
@@ -24,6 +21,10 @@ def _allowed_labels(extra_info: Any) -> list[str]:
             labels = labels.tolist()
         return [str(label).strip().upper() for label in labels if str(label).strip()]
     return []
+
+
+def _active_labels(extra_info: Any) -> list[str]:
+    return _allowed_labels(extra_info) or list(_DEFAULT_LOOSE_LABELS)
 
 
 def _normalize_label(candidate: str | None, allowed: list[str]) -> str | None:
@@ -40,6 +41,30 @@ def _normalize_label(candidate: str | None, allowed: list[str]) -> str | None:
     if allowed and candidate not in allowed:
         return None
     return candidate
+
+
+def _label_pattern(labels: list[str]) -> str:
+    return "|".join(re.escape(label) for label in sorted(labels, key=len, reverse=True))
+
+
+def _paper_loose_patterns(labels: list[str]) -> list[re.Pattern]:
+    label_pat = _label_pattern(labels)
+    return [
+        re.compile(
+            rf"(?:final\s+)?(?:answer|choice|option)\s*(?:is|:|=|would be|should be)?\s*"
+            rf"(?:option\s*)?\(?\s*({label_pat})\s*\)?",
+            re.I,
+        ),
+        re.compile(rf"\b(?:choose|select|pick)\s*(?:option\s*)?\(?\s*({label_pat})\s*\)?", re.I),
+        re.compile(
+            rf"\bso\s+(?:the\s+)?(?:answer|choice)\s*(?:is|:)\s*(?:option\s*)?\(?\s*({label_pat})\s*\)?",
+            re.I,
+        ),
+    ]
+
+
+def _strip_special_tokens(text: str) -> str:
+    return _SPECIAL_TOKEN_RE.sub("", text)
 
 
 def _normalize_gold(ground_truth: Any, extra_info: Any = None) -> str | None:
@@ -60,11 +85,7 @@ def _extract_choice_label(text: str, allowed: list[str]) -> str | None:
 
 def extract_boxed_choice(solution_str: str, extra_info: Any = None) -> str | None:
     allowed = _allowed_labels(extra_info)
-    boxed_matches = list(_BOXED_RE.finditer(solution_str))
-    if not boxed_matches:
-        return None
-    match = boxed_matches[-1]
-    return _normalize_label(match.group(1) or match.group(2), allowed=allowed)
+    return _normalize_label(_extract_boxed_text(solution_str), allowed=allowed)
 
 
 def _extract_boxed_text(solution_str: str) -> str | None:
@@ -104,28 +125,46 @@ def _extract_boxed_text(solution_str: str) -> str | None:
 def _first_letter_a_to_h(text: str | None) -> str | None:
     if not text:
         return None
+    text = _TEXT_RE.sub(r"\1", str(text))
     match = re.search(r"[A-H]", str(text).upper())
     return match.group(0) if match else None
 
 
 def extract_loose_choice(solution_str: str, extra_info: Any = None) -> str | None:
-    del extra_info
+    allowed = _allowed_labels(extra_info)
+    labels = _active_labels(extra_info)
+    text = _strip_special_tokens(str(solution_str))
 
-    boxed = _extract_boxed_text(solution_str)
-    boxed_letter = _first_letter_a_to_h(boxed)
-    if boxed_letter is not None:
-        return boxed_letter
+    boxed = extract_boxed_choice(text, extra_info=extra_info)
+    if boxed is not None:
+        return boxed
 
-    tail = str(solution_str)[-1200:]
+    tail = text[-1200:]
     matches: list[tuple[int, str]] = []
-    for pattern in _PAPER_LOOSE_PATTERNS:
-        matches.extend((match.start(), match.group(1).upper()) for match in pattern.finditer(tail))
+    for pattern in _paper_loose_patterns(labels):
+        for match in pattern.finditer(tail):
+            candidate = _normalize_label(match.group(1), allowed=allowed)
+            if candidate is not None:
+                matches.append((match.start(), candidate))
     if matches:
         return sorted(matches)[-1][1]
 
-    standalone = list(re.finditer(r"(?<![A-Za-z])([A-H])(?![A-Za-z])", str(solution_str)[-200:]))
+    label_pat = _label_pattern(labels)
+    standalone = list(re.finditer(rf"(?<![A-Za-z0-9])({label_pat})(?![A-Za-z0-9])", text[-200:], re.I))
     if standalone:
-        return standalone[-1].group(1).upper()
+        candidate = _normalize_label(standalone[-1].group(1), allowed=allowed)
+        if candidate is not None:
+            return candidate
+
+    if isinstance(extra_info, dict):
+        choices = extra_info.get("choice_text_by_label") or {}
+        normalized_tail = " ".join(tail.upper().split())
+        for label, choice_text in choices.items():
+            choice_text_norm = " ".join(str(choice_text).upper().split())
+            if choice_text_norm and choice_text_norm in normalized_tail:
+                candidate = _normalize_label(str(label), allowed=allowed)
+                if candidate is not None:
+                    return candidate
 
     return None
 
@@ -137,9 +176,8 @@ def compute_strict_score(solution_str: str, ground_truth: Any, extra_info: Any =
 
 
 def compute_loose_score(solution_str: str, ground_truth: Any, extra_info: Any = None) -> float:
-    del extra_info
-    gold = _first_letter_a_to_h(str(ground_truth).strip())
-    pred = extract_loose_choice(solution_str)
+    gold = _normalize_gold(ground_truth, extra_info=extra_info)
+    pred = extract_loose_choice(solution_str, extra_info=extra_info)
     return 1.0 if gold is not None and pred == gold else 0.0
 
 
