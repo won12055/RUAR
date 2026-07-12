@@ -43,6 +43,18 @@ elif [[ -f "$RUAR_ROOT/.venv/bin/activate" ]]; then
     source "$RUAR_ROOT/.venv/bin/activate"
 fi
 
+PYTHON_BIN="${PYTHON_BIN:-}"
+if [[ -z "$PYTHON_BIN" ]]; then
+    if command -v python >/dev/null 2>&1; then
+        PYTHON_BIN=python
+    elif command -v python3 >/dev/null 2>&1; then
+        PYTHON_BIN=python3
+    else
+        echo "Missing Python executable: set PYTHON_BIN or activate RUAR_VENV." >&2
+        exit 2
+    fi
+fi
+
 export PYTHONPATH="$RUAR_ROOT:${PYTHONPATH:-}"
 export TOKENIZERS_PARALLELISM="${TOKENIZERS_PARALLELISM:-true}"
 export VLLM_ATTENTION_BACKEND="${VLLM_ATTENTION_BACKEND:-XFORMERS}"
@@ -77,6 +89,10 @@ TOTAL_STEPS="${TOTAL_STEPS:-50}"
 SAVE_FREQ="${SAVE_FREQ:-50}"
 TEST_FREQ="${TEST_FREQ:--1}"
 RUN_FINAL_VALIDATION="${RUN_FINAL_VALIDATION:-False}"
+SAVE_TOP_K_BY_VAL="${SAVE_TOP_K_BY_VAL:-0}"
+VAL_CHECKPOINT_METRIC="${VAL_CHECKPOINT_METRIC:-}"
+VAL_CHECKPOINT_MODE="${VAL_CHECKPOINT_MODE:-max}"
+DELETE_NON_TOP_VAL_CHECKPOINTS="${DELETE_NON_TOP_VAL_CHECKPOINTS:-True}"
 RUN_SUFFIX="${RUN_SUFFIX:-qwen3_8b_2gpu_train8_step${TOTAL_STEPS}_waitstart_answerready_lp02_m18k_r16k_mem030}"
 RUN_TAG="${RUN_TAG:-ruar_qwen3_8b_${DATASET_TAG}_${RUN_CONDITION}_${RUN_SUFFIX}}"
 
@@ -171,7 +187,7 @@ echo "[RUAR] length_penalty=$LENGTH_PENALTY_ENABLE coef=$LENGTH_PENALTY_COEF tar
 echo "[RUAR] advantage_scaling=$ADVANTAGE_SCALING_ENABLE ready_threshold=$ADVANTAGE_SCALING_READY_THRESHOLD consecutive=$ADVANTAGE_SCALING_CONSECUTIVE_REQUIRED scope=$ADVANTAGE_SCALING_SCOPE"
 echo "[RUAR] probe_answer_rollouts=$REFLECTION_ANSWER_ROLLOUTS stop_after_ready=$REFLECTION_STOP_AFTER_READY max_probe_prompt=$MAX_PROBE_PROMPT_LENGTH"
 
-python - <<'PY'
+"$PYTHON_BIN" - <<'PY'
 from importlib.metadata import version
 import torch
 
@@ -180,7 +196,7 @@ for package in ["torch", "transformers", "tokenizers", "vllm"]:
 print("cuda", torch.version.cuda, "available", torch.cuda.is_available())
 PY
 
-python -m ruar_training.main \
+"$PYTHON_BIN" -m ruar_training.main \
     data.train_files="$TRAIN_FILE" \
     data.val_files="$VAL_FILE" \
     data.train_batch_size="$TRAIN_BATCH_SIZE" \
@@ -257,6 +273,10 @@ python -m ruar_training.main \
     reflection.verify_num_processes=8 \
     trainer.val_before_train=False \
     trainer.run_final_validation="$RUN_FINAL_VALIDATION" \
+    trainer.save_top_k_by_val="$SAVE_TOP_K_BY_VAL" \
+    trainer.val_checkpoint_metric="$VAL_CHECKPOINT_METRIC" \
+    trainer.val_checkpoint_mode="$VAL_CHECKPOINT_MODE" \
+    trainer.delete_non_top_val_checkpoints="$DELETE_NON_TOP_VAL_CHECKPOINTS" \
     trainer.logger=['console'] \
     trainer.project_name=ruar \
     trainer.experiment_name="$RUN_TAG" \

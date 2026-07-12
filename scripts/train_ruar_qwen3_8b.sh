@@ -35,6 +35,7 @@ export RUN_FINAL_VALIDATION="${RUN_FINAL_VALIDATION:-False}"
 export REFLECTION_STOP_AFTER_READY="${REFLECTION_STOP_AFTER_READY:-True}"
 export RUN_SUFFIX="${RUN_SUFFIX:-qwen3_8b_2gpu_train8_step${TOTAL_STEPS}_waitstart_answerready_lp02_m18k_r16k_mem030}"
 export RUAR_ROOT="$ROOT"
+JOB_NAME_PREFIX="${JOB_NAME_PREFIX:-ruar_qwen3_8b}"
 
 mkdir -p "$LOG_DIR"
 
@@ -69,9 +70,9 @@ SBATCH_ARGS=(
     --gres=gpu:"${N_GPUS:-2}"
     --cpus-per-task="${CPUS_PER_TASK:-16}"
     --mem="${MEM:-256G}"
-    --job-name="ruar_qwen3_8b_${RUN_SUFFIX}"
-    --output="$LOG_DIR/ruar_qwen3_8b_${RUN_SUFFIX}_%j.out"
-    --error="$LOG_DIR/ruar_qwen3_8b_${RUN_SUFFIX}_%j.err"
+    --job-name="${JOB_NAME_PREFIX}_${RUN_SUFFIX}"
+    --output="$LOG_DIR/${JOB_NAME_PREFIX}_${RUN_SUFFIX}_%j.out"
+    --error="$LOG_DIR/${JOB_NAME_PREFIX}_${RUN_SUFFIX}_%j.err"
 )
 
 if [[ -n "${SBATCH_PARTITION:-}" ]]; then
@@ -89,8 +90,8 @@ fi
 
 job_id=$(sbatch "${SBATCH_ARGS[@]}" "$SBATCH_SCRIPT")
 
-echo "Submitted RUAR Qwen3-8B job=$job_id"
+echo "Submitted RUAR job=$job_id"
 echo "Run suffix: $RUN_SUFFIX"
 echo "Monitor:"
 echo "  squeue -j ${job_id%%_*}"
-echo "  tail -f $LOG_DIR/ruar_qwen3_8b_${RUN_SUFFIX}_${job_id%%_*}.out"
+echo "  tail -f $LOG_DIR/${JOB_NAME_PREFIX}_${RUN_SUFFIX}_${job_id%%_*}.out"

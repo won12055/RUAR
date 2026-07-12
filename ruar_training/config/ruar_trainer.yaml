@@ -105,6 +105,10 @@ trainer:
   n_gpus_per_node: 2
   save_freq: 50
   test_freq: -1
+  save_top_k_by_val: 0
+  val_checkpoint_metric: null
+  val_checkpoint_mode: max
+  delete_non_top_val_checkpoints: True
   resume_mode: disable
   val_before_train: False
   val_only: False

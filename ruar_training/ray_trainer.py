@@ -19,6 +19,7 @@ This trainer supports model-agonistic model initialization with huggingface
 import hashlib
 import json
 import os
+import shutil
 import statistics
 import threading
 import time
@@ -314,6 +315,107 @@ class RayRUARTrainer(RayPPOTrainer):
                                                            'latest_checkpointed_iteration.txt')
         with open(local_latest_checkpointed_iteration, 'w') as f:
             f.write(str(self.global_steps))
+
+    def _checkpoint_root(self):
+        checkpoint_folder = self.config.trainer.default_local_dir
+        if not os.path.isabs(checkpoint_folder):
+            checkpoint_folder = os.path.join(os.getcwd(), checkpoint_folder)
+        return checkpoint_folder
+
+    def _use_topk_val_checkpointing(self):
+        return int(self.config.trainer.get('save_top_k_by_val', 0) or 0) > 0
+
+    def _val_checkpoint_score(self, val_metrics):
+        metric_name = self.config.trainer.get('val_checkpoint_metric', None)
+        if metric_name:
+            value = val_metrics.get(metric_name)
+            if value is None:
+                print(f'[val-checkpoint] Metric {metric_name} not found; skip checkpoint.')
+                return None
+            return float(value)
+
+        values = [
+            float(value)
+            for key, value in val_metrics.items()
+            if key.startswith('val/test_score/')
+        ]
+        if not values:
+            print('[val-checkpoint] No val/test_score metrics found; skip checkpoint.')
+            return None
+        return float(statistics.mean(values))
+
+    def _write_topk_val_manifest(self, records):
+        manifest_path = os.path.join(self._checkpoint_root(), 'top_val_checkpoints.json')
+        with open(manifest_path, 'w') as f:
+            json.dump(records, f, indent=2, sort_keys=True)
+
+    def _load_topk_val_manifest(self):
+        if hasattr(self, '_top_val_checkpoints'):
+            return
+        manifest_path = os.path.join(self._checkpoint_root(), 'top_val_checkpoints.json')
+        if not os.path.isfile(manifest_path):
+            self._top_val_checkpoints = []
+            return
+        with open(manifest_path) as f:
+            records = json.load(f)
+        self._top_val_checkpoints = [
+            record for record in records
+            if os.path.isdir(record.get('path', ''))
+        ]
+
+    def _maybe_save_topk_val_checkpoint(self, val_metrics):
+        top_k = int(self.config.trainer.get('save_top_k_by_val', 0) or 0)
+        metrics = {'val_checkpoint/top_k': top_k, 'val_checkpoint/saved': 0}
+        if top_k <= 0:
+            return metrics
+        self._load_topk_val_manifest()
+
+        score = self._val_checkpoint_score(val_metrics)
+        if score is None:
+            return metrics
+
+        mode = str(self.config.trainer.get('val_checkpoint_mode', 'max')).lower()
+        if mode not in {'max', 'min'}:
+            raise ValueError(f'Unsupported val_checkpoint_mode={mode}')
+        reverse = mode == 'max'
+
+        records = getattr(self, '_top_val_checkpoints', [])
+        sorted_records = sorted(records, key=lambda item: item['score'], reverse=reverse)
+        current_is_better = len(sorted_records) < top_k
+        if sorted_records and len(sorted_records) >= top_k:
+            boundary_score = sorted_records[-1]['score']
+            current_is_better = score > boundary_score if reverse else score < boundary_score
+
+        metrics['val_checkpoint/score'] = score
+        if not current_is_better:
+            print(f'[val-checkpoint] step={self.global_steps} score={score:.6f} did not enter top-{top_k}.')
+            self._write_topk_val_manifest(sorted_records[:top_k])
+            return metrics
+
+        self._save_checkpoint()
+        checkpoint_path = os.path.join(self._checkpoint_root(), f'global_step_{self.global_steps}')
+        sorted_records.append({
+            'step': int(self.global_steps),
+            'score': score,
+            'path': checkpoint_path,
+        })
+        sorted_records = sorted(sorted_records, key=lambda item: item['score'], reverse=reverse)
+        keep_records = sorted_records[:top_k]
+        drop_records = sorted_records[top_k:]
+
+        if self.config.trainer.get('delete_non_top_val_checkpoints', True):
+            keep_paths = {record['path'] for record in keep_records}
+            for record in drop_records:
+                path = record['path']
+                if path not in keep_paths and os.path.isdir(path):
+                    print(f'[val-checkpoint] Removing non-top checkpoint: {path}')
+                    shutil.rmtree(path)
+
+        self._top_val_checkpoints = keep_records
+        self._write_topk_val_manifest(keep_records)
+        metrics['val_checkpoint/saved'] = 1
+        metrics['val_checkpoint/best_score'] = keep_records[0]['score']
+        return metrics
 
     def _load_checkpoint(self):
         if self.config.trainer.resume_mode == 'disable':
@@ -1329,8 +1431,11 @@ class RayRUARTrainer(RayPPOTrainer):
                         with _timer('testing', timing_raw):
                             val_metrics: dict = self._validate()
                         metrics.update(val_metrics)
+                        if self._use_topk_val_checkpointing():
+                            with _timer('save_topk_checkpoint', timing_raw):
+                                metrics.update(self._maybe_save_topk_val_checkpoint(val_metrics))
 
-                    if self.config.trainer.save_freq > 0 and \
+                    if not self._use_topk_val_checkpointing() and self.config.trainer.save_freq > 0 and \
                             self.global_steps % self.config.trainer.save_freq == 0:
                         with _timer('save_checkpoint', timing_raw):
                             self._save_checkpoint()
@@ -1344,13 +1449,15 @@ class RayRUARTrainer(RayPPOTrainer):
                 self.global_steps += 1
 
                 if self.global_steps >= self.total_training_steps:
-
                     # perform validation after training
                     if self.val_reward_fn is not None and self.config.trainer.get('run_final_validation', True):
                         val_metrics = self._validate()
                         pprint(f'Final validation metrics: {val_metrics}')
                         logger.log(data=val_metrics, step=self.global_steps)
-                    if self.config.trainer.save_freq > 0 and \
+                        if self._use_topk_val_checkpointing():
+                            topk_metrics = self._maybe_save_topk_val_checkpoint(val_metrics)
+                            logger.log(data=topk_metrics, step=self.global_steps)
+                    if not self._use_topk_val_checkpointing() and self.config.trainer.save_freq > 0 and \
                             (self.global_steps - 1) % self.config.trainer.save_freq != 0:
                         with _timer('save_checkpoint', timing_raw):
                             self._save_checkpoint()
