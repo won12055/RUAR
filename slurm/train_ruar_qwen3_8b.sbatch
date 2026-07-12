@@ -150,6 +150,8 @@ ADVANTAGE_SCALING_PRE_READY_NEGATIVE_GAMMA="${ADVANTAGE_SCALING_PRE_READY_NEGATI
 ADVANTAGE_SCALING_APPLY_TO_ALL_WAIT="${ADVANTAGE_SCALING_APPLY_TO_ALL_WAIT:-True}"
 
 REFLECTION_STOP_AFTER_READY="${REFLECTION_STOP_AFTER_READY:-True}"
+REFLECTION_PERSISTENT_ROLLOUT_SESSION="${REFLECTION_PERSISTENT_ROLLOUT_SESSION:-True}"
+REFLECTION_PERSISTENT_VERIFY_POOL="${REFLECTION_PERSISTENT_VERIFY_POOL:-True}"
 REFLECTION_ANSWER_ROLLOUTS="${REFLECTION_ANSWER_ROLLOUTS:-4}"
 # 0 means no cap: use all extracted Wait-start spans until
 # REFLECTION_STOP_AFTER_READY stops further answer-forcing probes.
@@ -185,7 +187,7 @@ echo "[RUAR] train_file=$TRAIN_FILE val_file=$VAL_FILE"
 echo "[RUAR] prompt=$MAX_PROMPT_LENGTH response=$MAX_RESPONSE_LENGTH model_len=$MAX_MODEL_LEN rollout_n=$ROLLOUT_N"
 echo "[RUAR] length_penalty=$LENGTH_PENALTY_ENABLE coef=$LENGTH_PENALTY_COEF target=$LENGTH_PENALTY_TARGET mode=$LENGTH_PENALTY_MODE cap=$LENGTH_PENALTY_CAP std_floor=$LENGTH_PENALTY_STD_FLOOR only_correct=$LENGTH_PENALTY_ONLY_CORRECT"
 echo "[RUAR] advantage_scaling=$ADVANTAGE_SCALING_ENABLE ready_threshold=$ADVANTAGE_SCALING_READY_THRESHOLD consecutive=$ADVANTAGE_SCALING_CONSECUTIVE_REQUIRED scope=$ADVANTAGE_SCALING_SCOPE"
-echo "[RUAR] probe_answer_rollouts=$REFLECTION_ANSWER_ROLLOUTS stop_after_ready=$REFLECTION_STOP_AFTER_READY max_probe_prompt=$MAX_PROBE_PROMPT_LENGTH"
+echo "[RUAR] probe_answer_rollouts=$REFLECTION_ANSWER_ROLLOUTS stop_after_ready=$REFLECTION_STOP_AFTER_READY persistent_session=$REFLECTION_PERSISTENT_ROLLOUT_SESSION persistent_verify_pool=$REFLECTION_PERSISTENT_VERIFY_POOL max_probe_prompt=$MAX_PROBE_PROMPT_LENGTH"
 
 "$PYTHON_BIN" - <<'PY'
 from importlib.metadata import version
@@ -270,6 +272,8 @@ PY
     reflection.post_answer_threshold="$REFLECTION_POST_ANSWER_THRESHOLD" \
     reflection.class_threshold="$REFLECTION_CLASS_THRESHOLD" \
     reflection.stop_after_ready="$REFLECTION_STOP_AFTER_READY" \
+    reflection.persistent_rollout_session="$REFLECTION_PERSISTENT_ROLLOUT_SESSION" \
+    reflection.persistent_verify_pool="$REFLECTION_PERSISTENT_VERIFY_POOL" \
     reflection.verify_num_processes=8 \
     trainer.val_before_train=False \
     trainer.run_final_validation="$RUN_FINAL_VALIDATION" \

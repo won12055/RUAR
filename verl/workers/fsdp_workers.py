@@ -103,6 +103,7 @@ class ActorRolloutRefWorker(Worker):
         self._is_actor = self.role in ['actor', 'actor_rollout', 'actor_rollout_ref']
         self._is_rollout = self.role in ['rollout', 'actor_rollout', 'actor_rollout_ref']
         self._is_ref = self.role in ['ref', 'actor_rollout_ref']
+        self._rollout_session_active = False
 
         self._is_offload_param = False
         self._is_offload_optimizer = False
@@ -440,16 +441,9 @@ class ActorRolloutRefWorker(Worker):
         torch.cuda.empty_cache()
         return output
 
-    @register(dispatch_mode=Dispatch.DP_COMPUTE_PROTO)
-    def generate_sequences(self, prompts: DataProto):
-        # Support all hardwares
+    def _generate_sequences_with_active_rollout(self, prompts: DataProto):
+        """Generate while the rollout sharding manager is already active."""
         prompts = prompts.to(torch.cuda.current_device())
-
-        assert self._is_rollout
-        if self._is_offload_param:
-            load_fsdp_model_to_gpu(self.actor_module_fsdp)
-
-        # Support all hardwares
         prompts.batch = prompts.batch.to(torch.cuda.current_device())
         meta_info = {
             'eos_token_id':
@@ -460,30 +454,78 @@ class ActorRolloutRefWorker(Worker):
                 if self.generation_config is not None else self.tokenizer.pad_token_id,
         }
         prompts.meta_info.update(meta_info)
-        with self.rollout_sharding_manager:
-
-            # after parameters sync with rollout, offload actor model to CPU
-            if self._is_offload_param:
-                offload_fsdp_model_to_cpu(self.actor_module_fsdp)
-            if self._is_offload_optimizer:
-                offload_fsdp_optimizer(optimizer=self.actor_optimizer)
-
-            log_gpu_memory_usage('After entering rollout sharding manager', logger=logger)
-
-            rollout_kwargs = prompts.meta_info.get('sampling_kwargs', {})
-            prompts = self.rollout_sharding_manager.preprocess_data(prompts)
-            output = self.rollout.generate_sequences(prompts=prompts, **rollout_kwargs)
-
-            log_gpu_memory_usage('After rollout generation', logger=logger)
-
-            output = self.rollout_sharding_manager.postprocess_data(output)
-
+        rollout_kwargs = prompts.meta_info.get('sampling_kwargs', {})
+        prompts = self.rollout_sharding_manager.preprocess_data(prompts)
+        output = self.rollout.generate_sequences(prompts=prompts, **rollout_kwargs)
+        log_gpu_memory_usage('After rollout generation', logger=logger)
+        output = self.rollout_sharding_manager.postprocess_data(output)
         output = output.to('cpu')
+        return output
+
+    def _offload_training_state_for_rollout(self):
+        if self._is_offload_param:
+            offload_fsdp_model_to_cpu(self.actor_module_fsdp)
+        if self._is_offload_optimizer:
+            offload_fsdp_optimizer(optimizer=self.actor_optimizer)
+
+    @register(dispatch_mode=Dispatch.DP_COMPUTE_PROTO)
+    def generate_sequences(self, prompts: DataProto):
+        assert self._is_rollout
+        if self._rollout_session_active:
+            raise RuntimeError('generate_sequences cannot enter a second rollout session')
+        if self._is_offload_param:
+            load_fsdp_model_to_gpu(self.actor_module_fsdp)
+
+        with self.rollout_sharding_manager:
+            self._offload_training_state_for_rollout()
+            log_gpu_memory_usage('After entering rollout sharding manager', logger=logger)
+            output = self._generate_sequences_with_active_rollout(prompts)
 
         # clear kv cache
         torch.cuda.empty_cache()
         log_gpu_memory_usage('After recompute log prob', logger=logger)
         return output
+
+    @register(dispatch_mode=Dispatch.ONE_TO_ALL)
+    def begin_rollout_session(self):
+        """Synchronize actor weights and keep vLLM awake across generations."""
+        assert self._is_rollout
+        if self._rollout_session_active:
+            raise RuntimeError('A persistent rollout session is already active')
+        if self._is_offload_param:
+            load_fsdp_model_to_gpu(self.actor_module_fsdp)
+        session_entered = False
+        try:
+            self.rollout_sharding_manager.__enter__()
+            session_entered = True
+            self._offload_training_state_for_rollout()
+            self._rollout_session_active = True
+        except Exception:
+            if session_entered:
+                self.rollout_sharding_manager.__exit__(None, None, None)
+            raise
+        log_gpu_memory_usage('Persistent rollout session started', logger=logger)
+
+    @register(dispatch_mode=Dispatch.DP_COMPUTE_PROTO)
+    def generate_sequences_in_rollout_session(self, prompts: DataProto):
+        """Generate without re-syncing weights or sleeping the vLLM engine."""
+        assert self._is_rollout
+        if not self._rollout_session_active:
+            raise RuntimeError('No persistent rollout session is active')
+        return self._generate_sequences_with_active_rollout(prompts)
+
+    @register(dispatch_mode=Dispatch.ONE_TO_ALL)
+    def end_rollout_session(self):
+        """Close a persistent rollout session and release vLLM memory."""
+        assert self._is_rollout
+        if not self._rollout_session_active:
+            return
+        try:
+            self.rollout_sharding_manager.__exit__(None, None, None)
+        finally:
+            self._rollout_session_active = False
+        torch.cuda.empty_cache()
+        log_gpu_memory_usage('Persistent rollout session ended', logger=logger)
 
     @register(dispatch_mode=Dispatch.DP_COMPUTE_PROTO)
     def compute_log_prob(self, data: DataProto):

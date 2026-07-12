@@ -43,6 +43,20 @@ can close a step. The training integration should therefore extract all tracked
 cues for endpoint delimitation, then keep only `Wait`-start steps for the main
 RUAR setting.
 
+## Probe Execution
+
+The paper-aligned launcher enables `reflection.persistent_rollout_session` and
+`reflection.persistent_verify_pool`. Actor weights are synchronized to vLLM
+once at the start of each update's probe phase, and the engine remains awake
+while the ordered boundary rounds are processed. The rule-based verifier also
+reuses the same CPU worker pool across those rounds. The engine session and
+worker pool are closed before old-log-probability computation and the actor
+update. These are execution optimizations only: exact-boundary deduplication,
+`K=4`, boundary order, scoring, and answer-ready early stopping are unchanged.
+
+Set `REFLECTION_PERSISTENT_ROLLOUT_SESSION=False` or
+`REFLECTION_PERSISTENT_VERIFY_POOL=False` only for implementation diagnostics.
+
 ## Result Summaries
 
 The lightweight public evaluation entrypoint is `scripts/eval_ruar_math_aime.sh`,

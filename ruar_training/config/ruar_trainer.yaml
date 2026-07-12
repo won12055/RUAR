@@ -68,6 +68,9 @@ reflection:
   post_answer_threshold: 1.0
   class_threshold: 0.75
   stop_after_ready: True
+  # Keep vLLM synchronized and awake across all probe rounds in one update.
+  persistent_rollout_session: True
+  persistent_verify_pool: True
   verify_num_processes: 8
   temperature: ${actor_rollout_ref.rollout.temperature}
   top_p: ${actor_rollout_ref.rollout.top_p}

@@ -26,6 +26,7 @@ import time
 import uuid
 import asyncio
 from collections import defaultdict
+from concurrent.futures import ProcessPoolExecutor
 from contextlib import contextmanager
 from pprint import pprint
 
@@ -221,6 +222,8 @@ class RayRUARTrainer(RayPPOTrainer):
                          val_reward_fn=val_reward_fn)
 
         self._cot_dump_initialized_paths = set()
+        self._probe_rollout_session_active = False
+        self._probe_verify_executor = None
 
     def _validate_config(self):
         super()._validate_config()
@@ -539,7 +542,12 @@ class RayRUARTrainer(RayPPOTrainer):
             f"output_multiplier={output_multiplier}"
         )
         with self._phase_heartbeat(phase_label):
-            output_padded = self.actor_rollout_wg.generate_sequences(gen_batch_padded)
+            if self._probe_rollout_session_active:
+                output_padded = self.actor_rollout_wg.generate_sequences_in_rollout_session(
+                    gen_batch_padded
+                )
+            else:
+                output_padded = self.actor_rollout_wg.generate_sequences(gen_batch_padded)
         return unpad_dataproto(output_padded, pad_size=pad_size * output_multiplier)
 
     def _answer_forcing_generate_fn(self, prompts: list[str], k: int) -> list[list[str]]:
@@ -579,7 +587,8 @@ class RayRUARTrainer(RayPPOTrainer):
                     ground_truths,
                     data_sources,
                     extra_info=extra_infos,
-                    num_processes=self.config.reflection.get('verify_num_processes', 64)))
+                    num_processes=self.config.reflection.get('verify_num_processes', 64),
+                    executor=self._probe_verify_executor))
 
     @contextmanager
     def _phase_heartbeat(self, label: str, interval_s: int = 60):
@@ -844,25 +853,54 @@ class RayRUARTrainer(RayPPOTrainer):
             else configured_max_spans
         )
         scaling_cfg = self.config.algorithm.get('advantage_scaling', {})
-        estimate_result = estimate_answer_forcing_utilities(
-            samples=samples,
-            generate_fn=self._answer_forcing_generate_fn,
-            verify_fn=self._answer_forcing_verify_fn,
-            K=k,
-            max_spans_per_sample=estimator_max_spans,
-            max_span_chars=reflection_cfg.get('max_span_chars', None),
-            span_selection=reflection_cfg.get('span_selection', 'first'),
-            cue_types=reflection_cfg.get('cue_types', ['all']),
-            answer_forcing_suffix=answer_forcing_suffix,
-            post_answer_mode=reflection_cfg.get('post_answer_mode', 'off'),
-            post_answer_penalty=reflection_cfg.get('post_answer_penalty', 0.0),
-            post_answer_threshold=reflection_cfg.get('post_answer_threshold', 1.0),
-            class_threshold=reflection_cfg.get('class_threshold', 0.75),
-            ready_threshold=scaling_cfg.get('ready_threshold', 0.75),
-            consecutive_required=scaling_cfg.get('consecutive_required', 3),
-            stop_after_ready=bool(reflection_cfg.get('stop_after_ready', False)),
-            return_probe_evaluations=include_probe_rollouts,
+        persistent_probe_session = bool(
+            reflection_cfg.get('persistent_rollout_session', False)
         )
+        persistent_verify_pool = bool(
+            reflection_cfg.get('persistent_verify_pool', False)
+        )
+        metrics['reflection/persistent_rollout_session'] = float(persistent_probe_session)
+        metrics['reflection/persistent_verify_pool'] = float(persistent_verify_pool)
+        if persistent_verify_pool:
+            if self._probe_verify_executor is not None:
+                raise RuntimeError('A persistent probe verification pool is already active')
+            self._probe_verify_executor = ProcessPoolExecutor(
+                max_workers=int(reflection_cfg.get('verify_num_processes', 64))
+            )
+        try:
+            if persistent_probe_session:
+                self.actor_rollout_wg.begin_rollout_session()
+                self._probe_rollout_session_active = True
+            estimate_result = estimate_answer_forcing_utilities(
+                samples=samples,
+                generate_fn=self._answer_forcing_generate_fn,
+                verify_fn=self._answer_forcing_verify_fn,
+                K=k,
+                max_spans_per_sample=estimator_max_spans,
+                max_span_chars=reflection_cfg.get('max_span_chars', None),
+                span_selection=reflection_cfg.get('span_selection', 'first'),
+                cue_types=reflection_cfg.get('cue_types', ['all']),
+                answer_forcing_suffix=answer_forcing_suffix,
+                post_answer_mode=reflection_cfg.get('post_answer_mode', 'off'),
+                post_answer_penalty=reflection_cfg.get('post_answer_penalty', 0.0),
+                post_answer_threshold=reflection_cfg.get('post_answer_threshold', 1.0),
+                class_threshold=reflection_cfg.get('class_threshold', 0.75),
+                ready_threshold=scaling_cfg.get('ready_threshold', 0.75),
+                consecutive_required=scaling_cfg.get('consecutive_required', 3),
+                stop_after_ready=bool(reflection_cfg.get('stop_after_ready', False)),
+                return_probe_evaluations=include_probe_rollouts,
+            )
+        finally:
+            try:
+                if persistent_probe_session:
+                    try:
+                        self.actor_rollout_wg.end_rollout_session()
+                    finally:
+                        self._probe_rollout_session_active = False
+            finally:
+                if self._probe_verify_executor is not None:
+                    self._probe_verify_executor.shutdown(wait=True)
+                    self._probe_verify_executor = None
         if include_probe_rollouts:
             labels, _, _, probe_evaluations, ready_boundary_chars = estimate_result
         else:

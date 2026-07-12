@@ -8,9 +8,10 @@ When Reflection Helps: Utility-Guided Advantage Rescaling.
     u_j        = p_after_j - p_before_j   in [-1, +1]
 
 Key efficiency property:
-    span_j = [cue_j, cue_{j+1})  =>  after_j == before_{j+1}
-So with N reflective steps per sample we only need (N + 1) unique probe points,
-not 2N. We dedup probes within a sample before batching to the rollout engine.
+    Probe points are deduplicated by exact `(sample_idx, char_pos)` boundary.
+    Adjacent selected steps share a probe when `after_j == before_{j+1}`;
+    otherwise both boundaries remain distinct. Thus N selected steps require
+    between N + 1 and 2N unique probes.
 
 Design:
     The generation and verification engines are injected as callables. This
@@ -119,10 +120,10 @@ def _build_probe_batch(
 ) -> AnswerForcingProbeBatch:
     """Collect unique probe points across all samples.
 
-    For each sample with N spans we add N + 1 unique char positions:
-        cue_0_start, cue_1_start, ..., cue_{N-1}_start, span_{N-1}_end
-    The span_end of span_j equals cue_{j+1}_start for j < N-1, so the dedup
-    inside one sample collapses adjacent spans for free.
+    Each selected span contributes its exact cue-start and span-end boundary.
+    Coincident boundaries are evaluated once and reused. When an unselected
+    delimiter lies between selected spans, the preceding span end and next
+    selected span start remain separate probe points.
     """
     batch = AnswerForcingProbeBatch()
 
@@ -371,9 +372,19 @@ def estimate_answer_forcing_utilities(
     batch = AnswerForcingProbeBatch()
     probabilities: List[float] = []
     probe_evaluations: List[AnswerForcingProbeEvaluation] = []
-    labels_by_sample: List[List[ReflectiveStepUtility]] = [[] for _ in samples]
+    labels_by_sample: List[Dict[int, ReflectiveStepUtility]] = [dict() for _ in samples]
     positions_per_sample = [_ordered_probe_positions(spans) for spans in spans_per_sample]
-    probs_by_sample: List[List[float]] = [[] for _ in samples]
+    probabilities_by_position: List[Dict[int, float]] = [dict() for _ in samples]
+    span_starts_per_sample: List[Dict[int, int]] = [
+        {span.cue_start: span_idx for span_idx, span in enumerate(spans)}
+        for spans in spans_per_sample
+    ]
+    span_ends_per_sample: List[Dict[int, List[int]]] = []
+    for spans in spans_per_sample:
+        spans_by_end: Dict[int, List[int]] = {}
+        for span_idx, span in enumerate(spans):
+            spans_by_end.setdefault(span.span_end, []).append(span_idx)
+        span_ends_per_sample.append(spans_by_end)
     next_pos_idx = [0 for _ in samples]
     ready_streak = [0 for _ in samples]
     ready_streak_start = [-1 for _ in samples]
@@ -430,39 +441,41 @@ def estimate_answer_forcing_utilities(
 
         finished_samples = []
         for sidx, pos in zip(round_sample_order, round_pos_order):
-            pos_idx = next_pos_idx[sidx]
             spans = spans_per_sample[sidx]
             current_prob = round_probabilities[round_batch.index[(sidx, pos)]]
-            probs_by_sample[sidx].append(current_prob)
+            probabilities_by_position[sidx][pos] = current_prob
 
-            # Finalize the previous span once we know its p_after.
-            prev_span_idx = pos_idx - 1
-            if prev_span_idx >= 0 and prev_span_idx < len(spans):
-                prev_span = spans[prev_span_idx]
-                labels_by_sample[sidx].append(
-                    _make_label(
-                        sidx,
-                        prev_span_idx,
-                        prev_span,
-                        probs_by_sample[sidx][prev_span_idx],
-                        probs_by_sample[sidx][prev_span_idx + 1],
-                    )
+            # Finalize every span ending here by looking up its exact before
+            # and after boundaries. A non-target delimiter can make this
+            # position differ from the next selected span's cue start.
+            for span_idx in span_ends_per_sample[sidx].get(pos, []):
+                span = spans[span_idx]
+                p_before = probabilities_by_position[sidx].get(span.cue_start)
+                if p_before is None:
+                    continue
+                labels_by_sample[sidx][span_idx] = _make_label(
+                    sidx,
+                    span_idx,
+                    span,
+                    p_before,
+                    current_prob,
                 )
 
-            # Update ready streak on p_before for the current span start.
-            if pos_idx < len(spans):
+            # Only selected cue starts contribute to the ready streak.
+            current_span_idx = span_starts_per_sample[sidx].get(pos)
+            if current_span_idx is not None:
                 if current_prob >= ready_threshold:
                     if ready_streak[sidx] == 0:
-                        ready_streak_start[sidx] = pos_idx
+                        ready_streak_start[sidx] = current_span_idx
                     ready_streak[sidx] += 1
                     if ready_streak[sidx] >= consecutive_required:
                         boundary_span_idx = ready_streak_start[sidx]
                         ready_boundary_chars[sidx] = spans[boundary_span_idx].cue_start
-                        labels_by_sample[sidx] = [
-                            label
-                            for label in labels_by_sample[sidx]
-                            if label.span_idx < boundary_span_idx
-                        ]
+                        labels_by_sample[sidx] = {
+                            span_idx: label
+                            for span_idx, label in labels_by_sample[sidx].items()
+                            if span_idx < boundary_span_idx
+                        }
                         finished_samples.append(sidx)
                         next_pos_idx[sidx] += 1
                         continue
@@ -477,7 +490,11 @@ def estimate_answer_forcing_utilities(
         for sidx in finished_samples:
             active.discard(sidx)
 
-    labels = [label for sample_labels in labels_by_sample for label in sample_labels]
+    labels = [
+        sample_labels[span_idx]
+        for sample_labels in labels_by_sample
+        for span_idx in sorted(sample_labels)
+    ]
 
     if return_probe_evaluations:
         return labels, batch, probabilities, probe_evaluations, ready_boundary_chars

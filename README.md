@@ -86,6 +86,12 @@ The launch scripts set the paper-aligned RUAR defaults:
 - length penalty coefficient `lambda_len=0.2`
 - `REFLECTION_STOP_AFTER_READY=True`, matching the paper's answer-ready probing rule
 
+The launcher keeps one vLLM rollout session active for the complete probe
+phase of an update and reuses one CPU verifier worker pool across probe rounds.
+This avoids repeated actor-weight synchronization, engine wake/sleep cycles,
+and process-pool startup without changing the extracted boundaries, probe
+sample count, scoring rule, or answer-ready stopping criterion.
+
 ## Training Environment
 
 The Qwen3-8B launcher runs the training code included in this repository:

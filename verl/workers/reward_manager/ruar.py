@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import asyncio
-from concurrent.futures import ProcessPoolExecutor
+from concurrent.futures import Executor, ProcessPoolExecutor
 from functools import partial
 from typing import Any, Callable
 
@@ -37,13 +37,17 @@ async def parallel_compute_score_async(
     extra_info=None,
     num_processes=64,
     timeout=300.0,
+    executor: Executor | None = None,
 ):
     if extra_info is None:
         extra_info = [None] * len(tasks)
 
     loop = asyncio.get_running_loop()
     scores = []
-    with ProcessPoolExecutor(max_workers=num_processes) as executor:
+    owns_executor = executor is None
+    if executor is None:
+        executor = ProcessPoolExecutor(max_workers=num_processes)
+    try:
         futures = [
             loop.run_in_executor(
                 executor,
@@ -57,6 +61,9 @@ async def parallel_compute_score_async(
             *(asyncio.wait_for(future, timeout=timeout) for future in futures),
             return_exceptions=True,
         )
+    finally:
+        if owns_executor:
+            executor.shutdown(wait=True)
 
     for result in results:
         if isinstance(result, Exception):
