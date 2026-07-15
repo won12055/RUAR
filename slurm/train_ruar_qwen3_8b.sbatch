@@ -87,6 +87,8 @@ fi
 
 TOTAL_STEPS="${TOTAL_STEPS:-50}"
 SAVE_FREQ="${SAVE_FREQ:-50}"
+SAVE_STEPS="${SAVE_STEPS:-[]}"
+KEEP_HF_ONLY_CHECKPOINTS="${KEEP_HF_ONLY_CHECKPOINTS:-False}"
 TEST_FREQ="${TEST_FREQ:--1}"
 RUN_FINAL_VALIDATION="${RUN_FINAL_VALIDATION:-False}"
 SAVE_TOP_K_BY_VAL="${SAVE_TOP_K_BY_VAL:-0}"
@@ -188,6 +190,7 @@ echo "[RUAR] prompt=$MAX_PROMPT_LENGTH response=$MAX_RESPONSE_LENGTH model_len=$
 echo "[RUAR] length_penalty=$LENGTH_PENALTY_ENABLE coef=$LENGTH_PENALTY_COEF target=$LENGTH_PENALTY_TARGET mode=$LENGTH_PENALTY_MODE cap=$LENGTH_PENALTY_CAP std_floor=$LENGTH_PENALTY_STD_FLOOR only_correct=$LENGTH_PENALTY_ONLY_CORRECT"
 echo "[RUAR] advantage_scaling=$ADVANTAGE_SCALING_ENABLE ready_threshold=$ADVANTAGE_SCALING_READY_THRESHOLD consecutive=$ADVANTAGE_SCALING_CONSECUTIVE_REQUIRED scope=$ADVANTAGE_SCALING_SCOPE"
 echo "[RUAR] probe_answer_rollouts=$REFLECTION_ANSWER_ROLLOUTS stop_after_ready=$REFLECTION_STOP_AFTER_READY persistent_session=$REFLECTION_PERSISTENT_ROLLOUT_SESSION persistent_verify_pool=$REFLECTION_PERSISTENT_VERIFY_POOL max_probe_prompt=$MAX_PROBE_PROMPT_LENGTH"
+echo "[RUAR] save_steps=$SAVE_STEPS keep_hf_only_checkpoints=$KEEP_HF_ONLY_CHECKPOINTS"
 
 "$PYTHON_BIN" - <<'PY'
 from importlib.metadata import version
@@ -298,6 +301,8 @@ PY
     trainer.cot_dump.include_prompt=True \
     trainer.cot_dump.overwrite=True \
     trainer.save_freq="$SAVE_FREQ" \
+    trainer.save_steps="$SAVE_STEPS" \
+    trainer.keep_hf_only_checkpoints="$KEEP_HF_ONLY_CHECKPOINTS" \
     trainer.test_freq="$TEST_FREQ" \
     trainer.total_training_steps="$TOTAL_STEPS"
 

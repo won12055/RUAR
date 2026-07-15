@@ -21,6 +21,8 @@ import json
 import os
 import shutil
 import statistics
+import subprocess
+import sys
 import threading
 import time
 import uuid
@@ -318,6 +320,90 @@ class RayRUARTrainer(RayPPOTrainer):
                                                            'latest_checkpointed_iteration.txt')
         with open(local_latest_checkpointed_iteration, 'w') as f:
             f.write(str(self.global_steps))
+
+        if self.config.trainer.get('keep_hf_only_checkpoints', False):
+            self._export_checkpoint_to_hf(actor_local_path)
+            self._prune_checkpoint_to_hf_only(local_global_step_folder)
+
+    def _explicit_save_steps(self):
+        configured = self.config.trainer.get('save_steps', [])
+        if configured is None:
+            return set()
+        if isinstance(configured, str):
+            configured = configured.strip().strip('[]')
+            if not configured:
+                return set()
+            configured = [part.strip() for part in configured.split(',')]
+        return {int(step) for step in configured}
+
+    def _should_save_checkpoint_at_step(self, step):
+        explicit_steps = self._explicit_save_steps()
+        if explicit_steps:
+            return int(step) in explicit_steps
+        save_freq = int(self.config.trainer.get('save_freq', -1) or -1)
+        return save_freq > 0 and int(step) % save_freq == 0
+
+    def _export_checkpoint_to_hf(self, actor_folder):
+        export_script = os.path.join(
+            os.environ.get('RUAR_ROOT', os.getcwd()),
+            'scripts',
+            'export_fsdp_checkpoint.py',
+        )
+        if not os.path.isfile(export_script):
+            raise RuntimeError(f'Missing checkpoint export script: {export_script}')
+        subprocess.run(
+            [sys.executable, export_script, '--local-dir', actor_folder],
+            check=True,
+        )
+
+        hf_folder = os.path.join(actor_folder, 'huggingface')
+        weight_files = [
+            name for name in os.listdir(hf_folder)
+            if (name.startswith('model') and name.endswith('.safetensors'))
+            or name == 'pytorch_model.bin'
+        ]
+        if not weight_files:
+            raise RuntimeError(f'Hugging Face export produced no model weights in {hf_folder}')
+
+    def _prune_checkpoint_to_hf_only(self, global_step_folder):
+        actor_folder = os.path.join(global_step_folder, 'actor')
+        hf_folder = os.path.join(actor_folder, 'huggingface')
+        if not os.path.isdir(hf_folder):
+            raise RuntimeError(f'Missing Hugging Face export at {hf_folder}')
+
+        for name in os.listdir(actor_folder):
+            if name == 'huggingface':
+                continue
+            path = os.path.join(actor_folder, name)
+            if os.path.isdir(path) and not os.path.islink(path):
+                shutil.rmtree(path)
+            else:
+                os.remove(path)
+
+        for name in os.listdir(global_step_folder):
+            if name == 'actor':
+                continue
+            path = os.path.join(global_step_folder, name)
+            if os.path.isdir(path) and not os.path.islink(path):
+                shutil.rmtree(path)
+            else:
+                os.remove(path)
+
+        marker_path = os.path.join(global_step_folder, 'INFERENCE_ONLY.json')
+        with open(marker_path, 'w') as f:
+            json.dump({
+                'global_step': int(self.global_steps),
+                'model_path': hf_folder,
+                'resume_supported': False,
+            }, f, indent=2, sort_keys=True)
+
+        latest_path = os.path.join(
+            self.config.trainer.default_local_dir,
+            'latest_checkpointed_iteration.txt',
+        )
+        if os.path.isfile(latest_path):
+            os.remove(latest_path)
+        print(f'[checkpoint] Kept inference-only Hugging Face export: {hf_folder}')
 
     def _checkpoint_root(self):
         checkpoint_folder = self.config.trainer.default_local_dir
@@ -1473,8 +1559,8 @@ class RayRUARTrainer(RayPPOTrainer):
                             with _timer('save_topk_checkpoint', timing_raw):
                                 metrics.update(self._maybe_save_topk_val_checkpoint(val_metrics))
 
-                    if not self._use_topk_val_checkpointing() and self.config.trainer.save_freq > 0 and \
-                            self.global_steps % self.config.trainer.save_freq == 0:
+                    if not self._use_topk_val_checkpointing() and \
+                            self._should_save_checkpoint_at_step(self.global_steps):
                         with _timer('save_checkpoint', timing_raw):
                             self._save_checkpoint()
 
@@ -1495,8 +1581,10 @@ class RayRUARTrainer(RayPPOTrainer):
                         if self._use_topk_val_checkpointing():
                             topk_metrics = self._maybe_save_topk_val_checkpoint(val_metrics)
                             logger.log(data=topk_metrics, step=self.global_steps)
-                    if not self._use_topk_val_checkpointing() and self.config.trainer.save_freq > 0 and \
-                            (self.global_steps - 1) % self.config.trainer.save_freq != 0:
+                    explicit_save_steps = self._explicit_save_steps()
+                    save_freq = int(self.config.trainer.get('save_freq', -1) or -1)
+                    if not self._use_topk_val_checkpointing() and not explicit_save_steps and \
+                            save_freq > 0 and (self.global_steps - 1) % save_freq != 0:
                         with _timer('save_checkpoint', timing_raw):
                             self._save_checkpoint()
                     return
