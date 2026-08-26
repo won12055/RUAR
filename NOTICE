@@ -1,10 +1,5 @@
 Copyright 2023-2024 Bytedance Ltd. and/or its affiliates
 
-RUAR evaluation summaries report the Accuracy-Efficiency Score (AES) formula
-following the O1-Pruner evaluation metric. The AES implementation in
-ruar_eval/metrics.py is a local reporting utility and is not part of the RUAR
-training method.
-
 Portions of RUAR's boxed-answer evaluation utilities are adapted from DEER
 (Dynamic Early Exit in Reasoning Models), MIT License.
 

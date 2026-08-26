@@ -36,6 +36,8 @@ ALIASES = {
     "gpqa_diamond": ("gpqa_diamond", "gpqa"),
     "arc_challenge": ("arc_challenge",),
     "commonsenseqa": ("commonsenseqa",),
+    "minerva_math": ("minerva_math", "minerva"),
+    "olympiadbench": ("olympiadbench",),
 }
 MCQ_DATASETS = {"gpqa_diamond", "arc_challenge", "commonsenseqa"}
 DEFAULT_DATA_SOURCES = {
@@ -46,6 +48,8 @@ DEFAULT_DATA_SOURCES = {
     "gpqa_diamond": "mcq/gpqa_diamond",
     "arc_challenge": "mcq/arc_challenge",
     "commonsenseqa": "mcq/commonsenseqa",
+    "minerva_math": "boxed_math/minerva_math",
+    "olympiadbench": "boxed_math/olympiadbench",
 }
 
 
@@ -77,9 +81,20 @@ def question_text(row: dict[str, Any]) -> str:
 
 def math_answer_text(row: dict[str, Any]) -> str:
     answer = row.get("answer", row.get("final_answer"))
-    if answer is None:
-        raise ValueError(f"Cannot find answer in row keys: {sorted(row)}")
-    return str(answer)
+    if answer is not None:
+        return str(answer)
+
+    # Minerva Math stores its reference answer in the final boxed expression
+    # of the provided solution rather than in a separate answer column.
+    solution = row.get("solution")
+    if solution is not None:
+        from verl.utils.reward_score.boxed_math import extract_boxed_answer
+
+        answer = extract_boxed_answer(str(solution))
+        if answer is not None:
+            return answer
+
+    raise ValueError(f"Cannot find answer in row keys: {sorted(row)}")
 
 
 def _answer_to_letter(answer: Any) -> str:

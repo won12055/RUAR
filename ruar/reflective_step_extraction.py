@@ -135,6 +135,7 @@ def extract_reflective_steps(
     max_spans: Optional[int] = None,
     max_span_chars: Optional[int] = None,
     cue_types: Optional[Iterable[int | str]] = None,
+    end_cue_types: Optional[Iterable[int | str]] = None,
     span_selection: str = "first",
 ) -> List[ReflectiveStep]:
     """Extract reflective reasoning steps within the <think> block.
@@ -144,8 +145,11 @@ def extract_reflective_steps(
             cues outside the block are ignored.
         max_spans: If set, return only N spans according to span_selection.
         max_span_chars: If set, truncate any span longer than this many chars.
-        cue_types: Optional cue allow-list. Accepts ids or strings such as
-            "wait", "alternative", or "all".
+        cue_types: Optional start-cue allow-list. Accepts ids or strings such
+            as "wait", "alternative", or "all".
+        end_cue_types: Optional end-cue allow-list. Each span ends at the next
+            matching cue, or at the end of the thinking block. The default
+            uses every detected cue and preserves the original behavior.
         span_selection: Which spans to keep when max_spans is set.
 
     Returns:
@@ -153,25 +157,41 @@ def extract_reflective_steps(
     """
     start_limit, end_limit = _think_block_bounds(text)
     cues = _find_cues(text, start_limit, end_limit)
-    allowed = None
-    if cue_types is not None:
-        allowed = set()
-        for cue_type in cue_types:
+    def normalize_cue_types(configured_types):
+        if configured_types is None:
+            return None
+        allowed_types = set()
+        for cue_type in configured_types:
             if isinstance(cue_type, str):
                 if cue_type.lower() == "all":
-                    allowed = {WAIT, ALT}
+                    allowed_types = {WAIT, ALT}
                     break
                 if cue_type not in CUE_ALIASES:
                     raise ValueError(f"Unknown reflection cue type: {cue_type}")
-                allowed.add(CUE_ALIASES[cue_type])
+                allowed_types.add(CUE_ALIASES[cue_type])
             else:
-                allowed.add(int(cue_type))
+                allowed_types.add(int(cue_type))
+        return allowed_types
+
+    allowed_starts = normalize_cue_types(cue_types)
+    allowed_ends = normalize_cue_types(end_cue_types)
+    if allowed_ends is None:
+        allowed_ends = {WAIT, ALT}
     if not cues:
         return []
 
     spans: List[ReflectiveStep] = []
     for i, cue in enumerate(cues):
-        next_start = cues[i + 1].cue_start if i + 1 < len(cues) else end_limit
+        if allowed_starts is not None and cue.cue_type not in allowed_starts:
+            continue
+        next_start = next(
+            (
+                next_cue.cue_start
+                for next_cue in cues[i + 1 :]
+                if next_cue.cue_type in allowed_ends
+            ),
+            end_limit,
+        )
         span_end = next_start
         if max_span_chars is not None:
             span_end = min(span_end, cue.cue_start + max_span_chars)
@@ -183,9 +203,6 @@ def extract_reflective_steps(
                 span_end=span_end,
             )
         )
-
-    if allowed is not None:
-        spans = [span for span in spans if span.cue_type in allowed]
 
     if max_spans is not None and len(spans) > max_spans:
         selection = str(span_selection or "first").lower()

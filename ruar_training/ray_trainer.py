@@ -592,7 +592,7 @@ class RayRUARTrainer(RayPPOTrainer):
                 'do_sample': True,
                 'reflection_probe': True,
                 'sampling_kwargs': {
-                    'max_tokens': self.config.reflection.get('max_answer_tokens', 64),
+                    'max_tokens': self.config.reflection.get('max_answer_tokens', 16),
                     'n': self.config.reflection.get(
                         'answer_rollouts', self.config.actor_rollout_ref.rollout.n),
                     'temperature': self.config.reflection.get(
@@ -663,7 +663,8 @@ class RayRUARTrainer(RayPPOTrainer):
             raise RuntimeError('Reflection answer forcing requires RUARRewardManager.compute_score')
         phase_label = (
             f"answer_forcing_verify completions={len(completions)} "
-            f"num_processes={self.config.reflection.get('verify_num_processes', 64)}"
+            f"num_processes={self.config.reflection.get('verify_num_processes', 64)} "
+            f"batch_size={self.config.reflection.get('verify_batch_size', 512)}"
         )
         with self._phase_heartbeat(phase_label):
             return asyncio.run(
@@ -674,7 +675,8 @@ class RayRUARTrainer(RayPPOTrainer):
                     data_sources,
                     extra_info=extra_infos,
                     num_processes=self.config.reflection.get('verify_num_processes', 64),
-                    executor=self._probe_verify_executor))
+                    executor=self._probe_verify_executor,
+                    batch_size=self.config.reflection.get('verify_batch_size', 512)))
 
     @contextmanager
     def _phase_heartbeat(self, label: str, interval_s: int = 60):
@@ -939,6 +941,7 @@ class RayRUARTrainer(RayPPOTrainer):
             else configured_max_spans
         )
         scaling_cfg = self.config.algorithm.get('advantage_scaling', {})
+        use_answer_ready = bool(scaling_cfg.get('use_answer_ready', True))
         persistent_probe_session = bool(
             reflection_cfg.get('persistent_rollout_session', False)
         )
@@ -966,6 +969,7 @@ class RayRUARTrainer(RayPPOTrainer):
                 max_span_chars=reflection_cfg.get('max_span_chars', None),
                 span_selection=reflection_cfg.get('span_selection', 'first'),
                 cue_types=reflection_cfg.get('cue_types', ['all']),
+                end_cue_types=reflection_cfg.get('end_cue_types', ['all']),
                 answer_forcing_suffix=answer_forcing_suffix,
                 post_answer_mode=reflection_cfg.get('post_answer_mode', 'off'),
                 post_answer_penalty=reflection_cfg.get('post_answer_penalty', 0.0),
@@ -973,7 +977,11 @@ class RayRUARTrainer(RayPPOTrainer):
                 class_threshold=reflection_cfg.get('class_threshold', 0.75),
                 ready_threshold=scaling_cfg.get('ready_threshold', 0.75),
                 consecutive_required=scaling_cfg.get('consecutive_required', 3),
-                stop_after_ready=bool(reflection_cfg.get('stop_after_ready', False)),
+                stop_after_ready=(
+                    bool(reflection_cfg.get('stop_after_ready', False))
+                    and use_answer_ready
+                ),
+                probe_batch_size=reflection_cfg.get('probe_batch_size', 0),
                 return_probe_evaluations=include_probe_rollouts,
             )
         finally:
@@ -1132,29 +1140,34 @@ class RayRUARTrainer(RayPPOTrainer):
             for label in labels:
                 labels_by_sample.setdefault(label.sample_idx, []).append(label)
 
-            # Compute ready boundary using consecutive ready spans.
-            for sample_idx in range(bsz):
-                if int(refl_ready_boundary_char[sample_idx].detach().cpu().item()) >= 0:
-                    scaling_boundaries[sample_idx] = int(refl_ready_boundary_char[sample_idx].detach().cpu().item())
-                    continue
-                sample_labels = labels_by_sample.get(sample_idx, [])
-                if not sample_labels:
-                    continue
-                # sort by cue position so "consecutive" follows response order
-                sample_labels_sorted = sorted(sample_labels, key=lambda l: l.cue_start_char)
-                streak = 0
-                streak_start: int = -1
-                for label in sample_labels_sorted:
-                    if label.p_before >= scaling_ready_threshold:
-                        if streak == 0:
-                            streak_start = label.cue_start_char
-                        streak += 1
-                        if streak >= consecutive_required:
-                            scaling_boundaries[sample_idx] = streak_start
-                            break
-                    else:
-                        streak = 0
-                        streak_start = -1
+            # Without answer-ready detection, every selected reflective step
+            # keeps its utility-guided multiplier and there is no fixed
+            # post-ready region.
+            if use_answer_ready:
+                for sample_idx in range(bsz):
+                    if int(refl_ready_boundary_char[sample_idx].detach().cpu().item()) >= 0:
+                        scaling_boundaries[sample_idx] = int(
+                            refl_ready_boundary_char[sample_idx].detach().cpu().item()
+                        )
+                        continue
+                    sample_labels = labels_by_sample.get(sample_idx, [])
+                    if not sample_labels:
+                        continue
+                    # sort by cue position so "consecutive" follows response order
+                    sample_labels_sorted = sorted(sample_labels, key=lambda l: l.cue_start_char)
+                    streak = 0
+                    streak_start: int = -1
+                    for label in sample_labels_sorted:
+                        if label.p_before >= scaling_ready_threshold:
+                            if streak == 0:
+                                streak_start = label.cue_start_char
+                            streak += 1
+                            if streak >= consecutive_required:
+                                scaling_boundaries[sample_idx] = streak_start
+                                break
+                        else:
+                            streak = 0
+                            streak_start = -1
 
             for sample_idx, sample_labels in labels_by_sample.items():
                 boundary = scaling_boundaries[sample_idx]

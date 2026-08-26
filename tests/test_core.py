@@ -5,7 +5,6 @@ from ruar.advantage_rescaling import (
     rescale_advantages,
     utility_to_sign_gammas,
 )
-from ruar_eval.metrics import accuracy_efficiency_score
 
 
 def test_utility_to_sign_gammas():
@@ -34,7 +33,3 @@ def test_compute_ruar_gammas():
     assert result.positive_gamma == [1.0, 1.5, 1.5, 0.25, 0.25, 0.25, 0.25, 1.0]
     assert result.negative_gamma == [1.0, 0.5, 0.5, 1.25, 1.25, 1.25, 1.25, 1.0]
     assert rescale_advantages([1, -1], [1.5, 0.25], [0.5, 1.25]) == [1.5, -1.25]
-
-
-def test_accuracy_efficiency_score():
-    assert round(accuracy_efficiency_score(0.934, 5048, 0.928, 3069), 3) == 0.360

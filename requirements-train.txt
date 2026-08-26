@@ -1,4 +1,4 @@
-# Dependencies for full RUAR Qwen3-8B training.
+# Dependencies for full RUAR training.
 #
 # Install a CUDA-compatible PyTorch build before this file. The experiments were
 # validated with torch 2.10.0, vLLM 0.17.1, transformers 4.57.6, and Python 3.10.
@@ -20,15 +20,12 @@ liger-kernel==0.8.0
 numpy==2.2.6
 omegaconf==2.3.0
 pandas==2.3.3
-peft==0.19.1
 pyarrow==24.0.0
-pybind11==3.0.4
 pylatexenc==2.10
 sympy==1.14.0
 ray[data,train,tune,serve]==2.55.1
 tensordict==0.12.2
 tokenizers==0.22.2
-torchdata==0.11.0
 tqdm==4.67.3
 transformers==4.57.6
 vllm==0.17.1

@@ -180,52 +180,68 @@ def _estimate_solve_probabilities(
     K: int,
     generate_fn: GenerateFn,
     verify_fn: VerifyFn,
+    probe_batch_size: Optional[int] = None,
 ) -> Tuple[List[float], List[AnswerForcingProbeEvaluation]]:
     """Run K answer-forced rollouts per probe and return p = (#correct)/K."""
     if not batch.prompts:
         return [], []
 
-    completions: List[List[str]] = generate_fn(batch.prompts, K)
-    assert len(completions) == len(batch.prompts), (
-        f"generate_fn returned {len(completions)} groups for {len(batch.prompts)} prompts"
-    )
-    assert all(len(c) == K for c in completions), (
-        f"generate_fn must return exactly K={K} continuations per prompt"
-    )
-
-    # Flatten for a single verifier call: K continuations per probe, in order.
-    flat_completions: List[str] = []
-    flat_gt: List[Any] = []
-    flat_ds: List[Any] = []
-    flat_ei: List[Any] = []
-    for i, group in enumerate(completions):
-        flat_completions.extend(batch.response_prefixes[i] + continuation for continuation in group)
-        flat_gt.extend([batch.ground_truths[i]] * K)
-        flat_ds.extend([batch.data_sources[i]] * K)
-        flat_ei.extend([batch.extra_infos[i]] * K)
-
-    flat_scores = verify_fn(flat_completions, flat_gt, flat_ds, flat_ei)
-    assert len(flat_scores) == len(flat_completions), (
-        f"verify_fn returned {len(flat_scores)} scores for {len(flat_completions)} items"
-    )
-
     probabilities: List[float] = []
     evaluations: List[AnswerForcingProbeEvaluation] = []
-    for i in range(len(batch.prompts)):
-        chunk = flat_scores[i * K : (i + 1) * K]
-        probability = sum(chunk) / K
-        probabilities.append(probability)
-        point = batch.points[i]
-        evaluations.append(
-            AnswerForcingProbeEvaluation(
-                sample_idx=point.sample_idx,
-                char_pos=point.char_pos,
-                response_prefix=batch.response_prefixes[i],
-                continuations=completions[i],
-                scores=[float(score) for score in chunk],
-                probability=probability,
-            )
+    if probe_batch_size is None or int(probe_batch_size) <= 0:
+        probe_batch_size = len(batch.prompts)
+    probe_batch_size = int(probe_batch_size)
+
+    # A no-answer-ready ablation can expose thousands of boundaries in one
+    # update. Process them in bounded chunks so padded prompt/output tensors do
+    # not scale with the complete update-level boundary set.
+    for start in range(0, len(batch.prompts), probe_batch_size):
+        end = min(start + probe_batch_size, len(batch.prompts))
+        completions: List[List[str]] = generate_fn(batch.prompts[start:end], K)
+        expected_groups = end - start
+        assert len(completions) == expected_groups, (
+            f"generate_fn returned {len(completions)} groups for {expected_groups} prompts"
         )
+        assert all(len(group) == K for group in completions), (
+            f"generate_fn must return exactly K={K} continuations per prompt"
+        )
+
+        flat_completions: List[str] = []
+        flat_gt: List[Any] = []
+        flat_ds: List[Any] = []
+        flat_ei: List[Any] = []
+        for local_idx, group in enumerate(completions):
+            global_idx = start + local_idx
+            flat_completions.extend(
+                batch.response_prefixes[global_idx] + continuation
+                for continuation in group
+            )
+            flat_gt.extend([batch.ground_truths[global_idx]] * K)
+            flat_ds.extend([batch.data_sources[global_idx]] * K)
+            flat_ei.extend([batch.extra_infos[global_idx]] * K)
+
+        flat_scores = verify_fn(flat_completions, flat_gt, flat_ds, flat_ei)
+        assert len(flat_scores) == len(flat_completions), (
+            f"verify_fn returned {len(flat_scores)} scores for {len(flat_completions)} items"
+        )
+
+        for local_idx, group in enumerate(completions):
+            global_idx = start + local_idx
+            score_start = local_idx * K
+            scores = flat_scores[score_start : score_start + K]
+            probability = sum(scores) / K
+            probabilities.append(probability)
+            point = batch.points[global_idx]
+            evaluations.append(
+                AnswerForcingProbeEvaluation(
+                    sample_idx=point.sample_idx,
+                    char_pos=point.char_pos,
+                    response_prefix=batch.response_prefixes[global_idx],
+                    continuations=group,
+                    scores=[float(score) for score in scores],
+                    probability=probability,
+                )
+            )
     return probabilities, evaluations
 
 
@@ -255,6 +271,7 @@ def estimate_answer_forcing_utilities(
     max_span_chars: Optional[int] = None,
     span_selection: str = "first",
     cue_types=None,
+    end_cue_types=None,
     answer_forcing_suffix: str = ANSWER_FORCING_SUFFIX,
     post_answer_mode: str = "off",
     post_answer_penalty: float = 0.0,
@@ -263,6 +280,7 @@ def estimate_answer_forcing_utilities(
     ready_threshold: float = 0.75,
     consecutive_required: int = 3,
     stop_after_ready: bool = False,
+    probe_batch_size: Optional[int] = None,
     return_probe_evaluations: bool = False,
 ):
     """Estimate RUAR answer-forcing utilities for a batch of samples.
@@ -275,8 +293,13 @@ def estimate_answer_forcing_utilities(
         max_spans_per_sample: cap to keep compute bounded.
         max_span_chars: optional truncation passed to extract_reflective_steps.
         span_selection: selection policy when max_spans_per_sample is set.
-        cue_types: optional cue allow-list passed to extract_reflective_steps.
+        cue_types: optional start-cue allow-list passed to
+            extract_reflective_steps.
+        end_cue_types: optional end-cue allow-list passed to
+            extract_reflective_steps.
         answer_forcing_suffix: appended to each probe prefix.
+        probe_batch_size: maximum unique boundaries generated and verified at
+            once; non-positive values process the complete probe batch.
 
     Returns:
         labels: utility labels, in `(sample_idx, span_idx)` order.
@@ -300,6 +323,7 @@ def estimate_answer_forcing_utilities(
             max_spans=max_spans_per_sample,
             max_span_chars=max_span_chars,
             cue_types=cue_types,
+            end_cue_types=end_cue_types,
             span_selection=span_selection,
         )
         for sample in samples
@@ -345,7 +369,13 @@ def estimate_answer_forcing_utilities(
 
     if not stop_after_ready:
         batch = _build_probe_batch(samples, spans_per_sample, answer_forcing_suffix)
-        probabilities, probe_evaluations = _estimate_solve_probabilities(batch, K, generate_fn, verify_fn)
+        probabilities, probe_evaluations = _estimate_solve_probabilities(
+            batch,
+            K,
+            generate_fn,
+            verify_fn,
+            probe_batch_size=probe_batch_size,
+        )
 
         labels: List[ReflectiveStepUtility] = []
         for sidx, spans in enumerate(spans_per_sample):
@@ -416,7 +446,11 @@ def estimate_answer_forcing_utilities(
             break
 
         round_probabilities, round_evaluations = _estimate_solve_probabilities(
-            round_batch, K, generate_fn, verify_fn
+            round_batch,
+            K,
+            generate_fn,
+            verify_fn,
+            probe_batch_size=probe_batch_size,
         )
 
         for point, prompt, prefix, gt, ds, ei, prob, evaluation in zip(

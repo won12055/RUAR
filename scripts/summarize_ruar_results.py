@@ -1,24 +1,18 @@
 #!/usr/bin/env python3
-"""Summarize RUAR eval CSV/COT dumps with token counts and AES."""
+"""Summarize RUAR evaluation CSV/COT dumps with accuracy and token counts."""
 
 from __future__ import annotations
 
 import argparse
 import csv
 import json
-import sys
 from pathlib import Path
 from typing import Any
-
-sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
-
-from ruar_eval.metrics import accuracy_efficiency_score
 
 
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--results-csv", type=Path, required=True)
-    parser.add_argument("--base-label", default="base")
     parser.add_argument("--format", choices=["md", "tsv"], default="md")
     return parser.parse_args()
 
@@ -73,29 +67,47 @@ def load_rows(csv_path: Path) -> list[dict[str, Any]]:
     return out
 
 
-def render(rows: list[dict[str, Any]], base_label: str, fmt: str) -> str:
-    bases = {row["dataset"]: row for row in rows if row["model"] == base_label}
-    enriched = []
+def add_weighted_averages(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    grouped: dict[str, list[dict[str, Any]]] = {}
     for row in rows:
-        base = bases.get(row["dataset"])
-        aes = None
-        reduction = None
-        if base and row["acc"] is not None and row["tok"] is not None and base["acc"] and base["tok"]:
-            reduction = (base["tok"] - row["tok"]) / base["tok"]
-            aes = accuracy_efficiency_score(base["acc"], base["tok"], row["acc"], row["tok"])
-        enriched.append({**row, "token_reduction": reduction, "aes": aes})
+        if row["dataset"] != "weighted_avg":
+            grouped.setdefault(row["model"], []).append(row)
 
+    result = list(rows)
+    for model, model_rows in grouped.items():
+        valid = [
+            row
+            for row in model_rows
+            if row["acc"] is not None and row["tok"] is not None and row["n"] > 0
+        ]
+        if not valid:
+            continue
+        total_n = sum(row["n"] for row in valid)
+        result.append({
+            "model": model,
+            "dataset": "weighted_avg",
+            "acc": sum(row["acc"] * row["n"] for row in valid) / total_n,
+            "tok": sum(row["tok"] * row["n"] for row in valid) / total_n,
+            "n": total_n,
+            "cot_dump": "",
+        })
+    return result
+
+
+def row_sort_key(row: dict[str, Any]) -> tuple[bool, str, str]:
+    return row["dataset"] == "weighted_avg", row["dataset"], row["model"]
+
+
+def render(rows: list[dict[str, Any]], fmt: str) -> str:
     if fmt == "tsv":
-        lines = ["model\tdataset\tacc\ttok\ttoken_reduction\tAES\tn"]
-        for row in sorted(enriched, key=lambda r: (r["dataset"], r["model"])):
+        lines = ["model\tdataset\tacc\ttok\tn"]
+        for row in sorted(rows, key=row_sort_key):
             lines.append(
                 "\t".join([
                     row["model"],
                     row["dataset"],
                     "" if row["acc"] is None else f"{row['acc']:.6f}",
                     "" if row["tok"] is None else f"{row['tok']:.0f}",
-                    "" if row["token_reduction"] is None else f"{row['token_reduction']:.3f}",
-                    "" if row["aes"] is None else f"{row['aes']:.3f}",
                     str(row["n"]),
                 ])
             )
@@ -105,24 +117,23 @@ def render(rows: list[dict[str, Any]], base_label: str, fmt: str) -> str:
         return "" if value is None else f"{value:.{digits}f}"
 
     lines = [
-        "| model | dataset | acc | tok | token reduction | AES | n |",
-        "|---|---:|---:|---:|---:|---:|---:|",
+        "| model | dataset | acc | tok | n |",
+        "|---|---:|---:|---:|---:|",
     ]
-    for row in sorted(enriched, key=lambda r: (r["dataset"], r["model"])):
+    for row in sorted(rows, key=row_sort_key):
         lines.append(
             f"| {row['model']} | {row['dataset']} | "
             f"{fmt_float(row['acc'], 3)} | "
             f"{fmt_float(row['tok'], 0)} | "
-            f"{fmt_float(row['token_reduction'], 3)} | "
-            f"{fmt_float(row['aes'], 3)} | {row['n']} |"
+            f"{row['n']} |"
         )
     return "\n".join(lines)
 
 
 def main() -> None:
     args = parse_args()
-    rows = load_rows(args.results_csv)
-    print(render(rows, base_label=args.base_label, fmt=args.format))
+    rows = add_weighted_averages(load_rows(args.results_csv))
+    print(render(rows, fmt=args.format))
 
 
 if __name__ == "__main__":

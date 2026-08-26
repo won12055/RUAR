@@ -1,6 +1,7 @@
 # Lightweight dependencies for RUAR method utilities and unit tests.
-# For full Qwen3-8B RL reproduction, also install requirements-train.txt.
+# For full RUAR RL reproduction, also install requirements-train.txt.
 
 numpy
+pytest>=8.0
 sympy
 torch

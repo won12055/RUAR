@@ -1,10 +1,10 @@
 #!/usr/bin/env bash
-# Submit the Qwen3-8B RUAR training run from the paper configuration.
+# Generic Slurm submission entrypoint. DS-7B paper settings are the default.
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
-CONFIG_FILE="${CONFIG_FILE:-$ROOT/configs/ruar_qwen3_8b.env}"
-SBATCH_SCRIPT="${SBATCH_SCRIPT:-$ROOT/slurm/train_ruar_qwen3_8b.sbatch}"
+CONFIG_FILE="${CONFIG_FILE:-$ROOT/configs/ruar_ds7b.env}"
+SBATCH_SCRIPT="${SBATCH_SCRIPT:-$ROOT/slurm/train_ruar.sbatch}"
 LOG_DIR="${LOG_DIR:-$ROOT/logs}"
 
 if [[ -f "$CONFIG_FILE" ]]; then
@@ -27,15 +27,16 @@ if [[ -f "$CONFIG_FILE" ]]; then
     unset RUAR_ENV_BEFORE_CONFIG
 fi
 
-: "${MODEL_PATH:?Set MODEL_PATH to the local Qwen3-8B checkpoint or model id.}"
-export TOTAL_STEPS="${TOTAL_STEPS:-50}"
-export SAVE_FREQ="${SAVE_FREQ:-50}"
+: "${MODEL_PATH:?Set MODEL_PATH to a local DS-7B checkpoint or model id.}"
+export FINAL_CHECKPOINT_STEP="${FINAL_CHECKPOINT_STEP:-30}"
+export TOTAL_STEPS="${TOTAL_STEPS:-$((FINAL_CHECKPOINT_STEP + 1))}"
+export SAVE_FREQ="${SAVE_FREQ:-$FINAL_CHECKPOINT_STEP}"
 export TEST_FREQ="${TEST_FREQ:--1}"
 export RUN_FINAL_VALIDATION="${RUN_FINAL_VALIDATION:-False}"
 export REFLECTION_STOP_AFTER_READY="${REFLECTION_STOP_AFTER_READY:-True}"
-export RUN_SUFFIX="${RUN_SUFFIX:-qwen3_8b_2gpu_train8_step${TOTAL_STEPS}_waitstart_answerready_lp02_m18k_r16k_mem030}"
+export RUN_SUFFIX="${RUN_SUFFIX:-ds7b_2gpu_train8_updates${FINAL_CHECKPOINT_STEP}_s${FINAL_CHECKPOINT_STEP}_wait_wait_answerready_lp02_m18k_r16k}"
 export RUAR_ROOT="$ROOT"
-JOB_NAME_PREFIX="${JOB_NAME_PREFIX:-ruar_qwen3_8b}"
+JOB_NAME_PREFIX="${JOB_NAME_PREFIX:-ruar_ds7b}"
 
 mkdir -p "$LOG_DIR"
 

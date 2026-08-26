@@ -89,6 +89,7 @@ class vLLMRollout(BaseRollout):
         enable_sleep_mode = _as_bool(config.get("enable_sleep_mode", True), default=True)
         self.inference_engine = LLM(
             model=model_path,
+            trust_remote_code=_as_bool(config.get("trust_remote_code", False), default=False),
             enable_sleep_mode=enable_sleep_mode,
             tensor_parallel_size=tensor_parallel_size,
             distributed_executor_backend="external_launcher",

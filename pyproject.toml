@@ -13,7 +13,7 @@ dependencies = []
 include-package-data = true
 
 [tool.setuptools.packages.find]
-include = ["ruar", "ruar.*", "ruar_eval", "ruar_eval.*", "ruar_training", "ruar_training.*", "verl", "verl.*"]
+include = ["ruar", "ruar.*", "ruar_training", "ruar_training.*", "verl", "verl.*"]
 
 [tool.setuptools.package-data]
 ruar_training = ["config/*.yaml"]

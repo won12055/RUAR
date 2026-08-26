@@ -18,6 +18,7 @@ actor_rollout_ref:
   hybrid_engine: True
   model:
     use_remove_padding: True
+    trust_remote_code: False
   rollout:
     n: 16
     tensor_model_parallel_size: 2
@@ -26,6 +27,7 @@ actor_rollout_ref:
     max_model_len: 18432
     max_num_batched_tokens: 18432
     max_num_seqs: 8
+    trust_remote_code: False
   actor:
     ppo_mini_batch_size: 16
     ppo_micro_batch_size_per_gpu: 1
@@ -50,13 +52,14 @@ actor_rollout_ref:
 reflection:
   enable: True
   cue_types: ['wait']
-  # 0 means no cap: use all extracted Wait-start spans until stop_after_ready
+  end_cue_types: ['wait']
+  # 0 means no cap: use all extracted target steps until stop_after_ready
   # stops further answer-forcing probes.
   max_spans_per_sample: 0
   span_selection: first
   max_span_chars: null
   answer_rollouts: 4
-  max_answer_tokens: 32
+  max_answer_tokens: 16
   max_probe_prompt_length: null
   label_filter: signed
   label_threshold: 0.0
@@ -71,7 +74,11 @@ reflection:
   # Keep vLLM synchronized and awake across all probe rounds in one update.
   persistent_rollout_session: True
   persistent_verify_pool: True
+  # 0 preserves the ordinary update-level probe batching. Large ablations may
+  # set an explicit bound to avoid materializing every boundary at once.
+  probe_batch_size: 0
   verify_num_processes: 8
+  verify_batch_size: 512
   temperature: ${actor_rollout_ref.rollout.temperature}
   top_p: ${actor_rollout_ref.rollout.top_p}
   top_k: ${actor_rollout_ref.rollout.top_k}
@@ -90,6 +97,7 @@ algorithm:
   advantage_scaling:
     enable: True
     only_correct: False
+    use_answer_ready: True
     ready_threshold: 0.75
     consecutive_required: 3
     scope: all_post_ready
@@ -102,11 +110,12 @@ algorithm:
     apply_to_all_wait: True
 trainer:
   project_name: ruar
-  experiment_name: qwen3_8b_50step
+  experiment_name: ds7b_30step
   logger: ['console']
-  total_training_steps: 50
+  # The loop uses a one-based global counter; 31 executes updates 1--30.
+  total_training_steps: 31
   n_gpus_per_node: 2
-  save_freq: 50
+  save_freq: 30
   # Optional explicit update numbers. When non-empty, these replace save_freq.
   save_steps: []
   # Preserve only actor/huggingface after each save to minimize disk usage.

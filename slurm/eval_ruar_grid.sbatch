@@ -63,40 +63,41 @@ if [[ -z "$PYTHON_BIN" ]]; then
     fi
 fi
 
-RUN_TAG="${RUN_TAG:-ruar_qwen3_8b_numina_3k_50step}"
-CKPT_COND="${CKPT_COND:-ruar_wait_rloo}"
+RUN_TAG="${RUN_TAG:-ruar_ds7b_numina_3k_30step}"
+CKPT_COND="${CKPT_COND:-ruar_wait_wait_rloo}"
 CKPT_ROOT="${CKPT_ROOT:-$RUAR_ROOT/checkpoints/ruar/numina_3k/$RUN_TAG/$CKPT_COND}"
-RUAR_STEP="${RUAR_STEP:-50}"
-BASE_MODEL="${BASE_MODEL:-Qwen/Qwen3-8B}"
+RUAR_STEP="${RUAR_STEP:-30}"
+BASE_MODEL="${BASE_MODEL:-deepseek-ai/DeepSeek-R1-Distill-Qwen-7B}"
 BASE_MODEL_LABEL="${BASE_MODEL_LABEL:-base}"
 RUAR_MODEL_LABEL="${RUAR_MODEL_LABEL:-ruar}"
 INCLUDE_BASE_MODEL="${INCLUDE_BASE_MODEL:-1}"
 INCLUDE_RUAR_MODEL="${INCLUDE_RUAR_MODEL:-1}"
 EXPORT_RUAR_CHECKPOINT="${EXPORT_RUAR_CHECKPOINT:-1}"
 
-EVAL_COND_PREFIX="${EVAL_COND_PREFIX:-ruar_qwen3_8b}"
-EVAL_PROJECT_NAME="${EVAL_PROJECT_NAME:-ruar_eval}"
-EVAL_ROOT="${EVAL_ROOT:-$RUAR_ROOT/cot_dumps/eval_math_aime}"
+EVAL_COND_PREFIX="${EVAL_COND_PREFIX:-ruar_ds7b}"
+EVAL_PROJECT_NAME="${EVAL_PROJECT_NAME:-ruar_benchmark}"
+EVAL_ROOT="${EVAL_ROOT:-$RUAR_ROOT/cot_dumps/eval_7bench}"
 DATA_ROOT="${DATA_ROOT:-$RUAR_ROOT/data/paper_eval}"
 BENCHMARK_DATA_DIR="${BENCHMARK_DATA_DIR:-$RUAR_ROOT/data/benchmarks}"
-CKPT_EVAL_ROOT="${CKPT_EVAL_ROOT:-$RUAR_ROOT/checkpoints/eval/math_aime}"
-RESULT_CSV="${RESULT_CSV:-$RUAR_ROOT/reports/ruar_math_aime_results.csv}"
-REPORT_MD="${REPORT_MD:-$RUAR_ROOT/reports/ruar_math_aime_report.md}"
-REPORT_TITLE="${REPORT_TITLE:-RUAR MATH500/AIME2024 Evaluation}"
+CKPT_EVAL_ROOT="${CKPT_EVAL_ROOT:-$RUAR_ROOT/checkpoints/eval/7bench}"
+RESULT_CSV="${RESULT_CSV:-$RUAR_ROOT/reports/ruar_7bench_results.csv}"
+REPORT_MD="${REPORT_MD:-$RUAR_ROOT/reports/ruar_7bench_report.md}"
+REPORT_TITLE="${REPORT_TITLE:-RUAR Seven-Benchmark Evaluation}"
 BASE_MODEL_NOTE="${BASE_MODEL_NOTE:-RUAR is evaluated against the base model using greedy decoding.}"
 
 ROLLOUT_N="${ROLLOUT_N:-1}"
 VAL_SIZE="${VAL_SIZE:--1}"
 MAX_PROMPT_LENGTH="${MAX_PROMPT_LENGTH:-2048}"
-MAX_RESPONSE_LENGTH="${MAX_RESPONSE_LENGTH:-32768}"
-MAX_MODEL_LEN="${MAX_MODEL_LEN:-34816}"
-MAX_NUM_BATCHED_TOKENS="${MAX_NUM_BATCHED_TOKENS:-34816}"
+MAX_RESPONSE_LENGTH="${MAX_RESPONSE_LENGTH:-16384}"
+MAX_MODEL_LEN="${MAX_MODEL_LEN:-18432}"
+MAX_NUM_BATCHED_TOKENS="${MAX_NUM_BATCHED_TOKENS:-18432}"
 MAX_NUM_SEQS="${MAX_NUM_SEQS:-4}"
-TOKEN_BUDGET="${TOKEN_BUDGET:-65536}"
+TOKEN_BUDGET="${TOKEN_BUDGET:-32768}"
 ULYSSES_SEQUENCE_PARALLEL_SIZE="${ULYSSES_SEQUENCE_PARALLEL_SIZE:-1}"
 GPU_MEMORY_UTILIZATION="${GPU_MEMORY_UTILIZATION:-0.60}"
 ENABLE_CHUNKED_PREFILL="${ENABLE_CHUNKED_PREFILL:-True}"
 USE_REMOVE_PADDING="${USE_REMOVE_PADDING:-False}"
+TRUST_REMOTE_CODE="${TRUST_REMOTE_CODE:-False}"
 ROLLOUT_TEMPERATURE="${ROLLOUT_TEMPERATURE:-0.0}"
 ROLLOUT_TOP_P="${ROLLOUT_TOP_P:-1.0}"
 ROLLOUT_TOP_K="${ROLLOUT_TOP_K:--1}"
@@ -104,8 +105,8 @@ VALIDATE_SAMPLE="${VALIDATE_SAMPLE:-False}"
 SKIP_EXISTING="${SKIP_EXISTING:-1}"
 WRITE_PROGRESS_REPORT="${WRITE_PROGRESS_REPORT:-1}"
 MODEL_FILTER="${MODEL_FILTER:-}"
-DATASET_FILTER="${DATASET_FILTER:-math500,aime2024}"
-DATASET_SPECS="${DATASET_SPECS:-math500|math500|boxed_math/math500,aime2024|aime2024|boxed_math/aime2024}"
+DATASET_FILTER="${DATASET_FILTER:-gsm8k,math500,aime2024,hmmt25,gpqa_diamond,arc_challenge,commonsenseqa}"
+DATASET_SPECS="${DATASET_SPECS:-gsm8k|gsm8k|boxed_math/gsm8k,math500|math500|boxed_math/math500,aime2024|aime2024|boxed_math/aime2024,hmmt25|hmmt25|boxed_math/hmmt25,gpqa_diamond|gpqa_diamond|mcq/gpqa_diamond,arc_challenge|arc_challenge|mcq/arc_challenge,commonsenseqa|commonsenseqa|mcq/commonsenseqa}"
 export REPORT_TITLE BASE_MODEL_NOTE DATASET_FILTER
 
 mkdir -p "$RUAR_ROOT/logs" "$EVAL_ROOT" "$DATA_ROOT" "$CKPT_EVAL_ROOT" "$RUAR_ROOT/reports"
@@ -340,6 +341,7 @@ run_eval() {
         data.return_raw_chat=True \
         actor_rollout_ref.model.path="$model_path" \
         actor_rollout_ref.model.use_remove_padding="$USE_REMOVE_PADDING" \
+        actor_rollout_ref.model.trust_remote_code="$TRUST_REMOTE_CODE" \
         actor_rollout_ref.model.enable_gradient_checkpointing=False \
         actor_rollout_ref.actor.use_kl_loss=False \
         actor_rollout_ref.actor.optim.lr=1e-6 \
@@ -358,6 +360,7 @@ run_eval() {
         actor_rollout_ref.rollout.max_num_batched_tokens="$MAX_NUM_BATCHED_TOKENS" \
         actor_rollout_ref.rollout.max_model_len="$MAX_MODEL_LEN" \
         actor_rollout_ref.rollout.enable_chunked_prefill="$ENABLE_CHUNKED_PREFILL" \
+        actor_rollout_ref.rollout.trust_remote_code="$TRUST_REMOTE_CODE" \
         actor_rollout_ref.rollout.temperature="$ROLLOUT_TEMPERATURE" \
         actor_rollout_ref.rollout.top_p="$ROLLOUT_TOP_P" \
         actor_rollout_ref.rollout.top_k="$ROLLOUT_TOP_K" \

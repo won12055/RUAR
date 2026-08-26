@@ -38,6 +38,7 @@ async def parallel_compute_score_async(
     num_processes=64,
     timeout=300.0,
     executor: Executor | None = None,
+    batch_size: int | None = None,
 ):
     if extra_info is None:
         extra_info = [None] * len(tasks)
@@ -47,29 +48,36 @@ async def parallel_compute_score_async(
     owns_executor = executor is None
     if executor is None:
         executor = ProcessPoolExecutor(max_workers=num_processes)
+    if batch_size is None or batch_size <= 0:
+        batch_size = len(completions) or 1
+
     try:
-        futures = [
-            loop.run_in_executor(
-                executor,
-                partial(_score_one, evaluation_func, completion, reference, data_source, task_extra_info),
+        for start in range(0, len(completions), batch_size):
+            stop = min(start + batch_size, len(completions))
+            futures = [
+                loop.run_in_executor(
+                    executor,
+                    partial(_score_one, evaluation_func, completion, reference, data_source, task_extra_info),
+                )
+                for completion, reference, data_source, task_extra_info in zip(
+                    completions[start:stop],
+                    references[start:stop],
+                    tasks[start:stop],
+                    extra_info[start:stop],
+                )
+            ]
+            results = await asyncio.gather(
+                *(asyncio.wait_for(future, timeout=timeout) for future in futures),
+                return_exceptions=True,
             )
-            for completion, reference, data_source, task_extra_info in zip(
-                completions, references, tasks, extra_info
-            )
-        ]
-        results = await asyncio.gather(
-            *(asyncio.wait_for(future, timeout=timeout) for future in futures),
-            return_exceptions=True,
-        )
+            for result in results:
+                if isinstance(result, Exception):
+                    scores.append(0.0)
+                else:
+                    scores.append(float(result))
     finally:
         if owns_executor:
             executor.shutdown(wait=True)
-
-    for result in results:
-        if isinstance(result, Exception):
-            scores.append(0.0)
-        else:
-            scores.append(float(result))
     return scores
 
 

@@ -6,7 +6,7 @@ RUAR has two installation levels:
   reflective steps, compute answer-forcing utilities with injected callables,
   and test advantage rescaling.
 - Full training: adds the distributed RL, vLLM, and Ray packages needed for
-  Qwen3-8B 50-step reproduction.
+  the default DS-7B 30-update reproduction.
 
 ## Method Utilities
 
@@ -25,18 +25,11 @@ Run the core checks:
 python -m pytest tests
 ```
 
-If `pytest` is not installed:
+## Full Training Environment
 
-```bash
-python -m pip install pytest
-python -m pytest tests
-```
-
-## Full Qwen3-8B Training Environment
-
-Use a Linux machine with CUDA GPUs. The paper-scale run uses two GPUs for the
-Qwen3-8B configuration in `configs/ruar_qwen3_8b.env`. Slurm is assumed by the
-provided shell launchers; adapt the launch command if your cluster uses another
+Use a Linux machine with CUDA GPUs. The default DS-7B run uses two GPUs and the
+configuration in `configs/ruar_ds7b.env`. Slurm is assumed by the provided
+shell launchers; adapt the launch command if your cluster uses another
 scheduler.
 
 Create an environment:
@@ -80,7 +73,7 @@ PY
 ```
 
 For a lightweight smoke run you may set `USE_REMOVE_PADDING=False` to use the
-non-FlashAttention path. Paper-default Qwen3-8B reproduction should use
+non-FlashAttention path. Paper-default reproduction should use
 `USE_REMOVE_PADDING=True` with a working `flash-attn` installation.
 
 Verify key packages:
@@ -109,9 +102,9 @@ flash-attn 2.8.3
 
 ## Required Inputs for Training
 
-Before launching Qwen3-8B training, prepare:
+Before launching training, prepare:
 
-- `MODEL_PATH`: local path to the Qwen3-8B Hugging Face checkpoint.
+- `MODEL_PATH`: local path or model id for DeepSeek-R1-Distill-Qwen-7B.
 - Optional custom training and validation parquet files. The default Numina-3K
   files are already included under `data/numina_3k`.
 - Rows containing `prompt`, `data_source`, and `reward_info.ground_truth`.
@@ -140,8 +133,8 @@ environment as full training.
 
 Prepare:
 
-- `BASE_MODEL`: local path or model id for the base Qwen3-8B checkpoint.
-- `CKPT_ROOT`: RUAR checkpoint root containing `global_step_50/actor`, or
+- `BASE_MODEL`: local path or model id for the base DS-7B checkpoint.
+- `CKPT_ROOT`: RUAR checkpoint root containing `global_step_30/actor`, or
   `RUAR_MODEL_PATH`: a merged Hugging Face checkpoint to evaluate directly.
 - Paper-aligned evaluation `test.parquet` files are included under `data/paper_eval`.
   They cover GSM8K, MATH500, AIME2024, HMMT25, GPQA-Diamond, ARC-Challenge, and
@@ -153,42 +146,44 @@ If you want to rebuild evaluation data from JSONL files, place rows under
 `scripts/prepare_eval_benchmark.py`. The included `data/paper_eval` test files
 are the default for reproduction.
 
-The default evaluation uses greedy single-response decoding and
-`MAX_RESPONSE_LENGTH=32768`, matching the paper evaluation setting.
+The default evaluation runs the seven paper benchmarks with greedy
+single-response decoding and `MAX_RESPONSE_LENGTH=16384`.
 
 ## Launch Defaults
 
-`scripts/train_ruar_qwen3_8b.sh` loads `configs/ruar_qwen3_8b.env`
-automatically unless `CONFIG_FILE` is set to another env file.
+`scripts/train_ruar.sh` loads `configs/ruar_ds7b.env` automatically unless
+`CONFIG_FILE` is set to another env file.
 
 Launch the included Slurm training job:
 
 ```bash
-export MODEL_PATH=/path/to/Qwen3-8B
+export MODEL_PATH=/path/to/DeepSeek-R1-Distill-Qwen-7B
 # Optional if the files are not under data/numina_3k/.
 export TRAIN_FILE=/path/to/train.parquet
 export VAL_FILE=/path/to/val.parquet
-bash scripts/train_ruar_qwen3_8b.sh
+bash scripts/train_ruar.sh
 ```
 
 Cluster-specific Slurm options can be supplied without editing the script:
 
 ```bash
-SBATCH_PARTITION=gpu SBATCH_NODELIST=node01 bash scripts/train_ruar_qwen3_8b.sh
+SBATCH_PARTITION=gpu SBATCH_NODELIST=node01 bash scripts/train_ruar.sh
 ```
 
-Use the same environment variables for evaluation, for example:
+Use the seven-benchmark entrypoint for evaluation, for example:
 
 ```bash
-SBATCH_NODELIST=ubuntu bash scripts/eval_ruar_math_aime.sh
+SBATCH_NODELIST=ubuntu bash scripts/eval_ruar_7bench.sh
 ```
 
-The Qwen3-8B defaults use:
+The DS-7B defaults use:
 
-- `TOTAL_STEPS=50`
+- `FINAL_CHECKPOINT_STEP=30` (30 policy updates)
 - `ROLLOUT_N=16`
 - `TRAIN_BATCH_SIZE=8`
 - `MAX_RESPONSE_LENGTH=16384`
+- `REFLECTION_CUE_TYPES=['wait']`
+- `REFLECTION_END_CUE_TYPES=['wait']`
 - `USE_REMOVE_PADDING=True`
 - `REFLECTION_STOP_AFTER_READY=True`
 - `ADVANTAGE_SCALING_READY_THRESHOLD=0.75`

@@ -17,8 +17,22 @@ data/*
 outputs/
 wandb/
 
-reports/*.csv
-reports/*.md
+reports/
+
+# Local paper drafts and one-off analysis jobs are not part of the public
+# reproduction package. Add a finalized paper artifact explicitly if needed.
+paper/
+/*.pdf
+scripts/count_*reflective*.py
+scripts/mine_reflective_marker_candidates.py
+scripts/probe_answer_length_sensitivity.py
+scripts/reprobe_revision_utility_analysis.py
+scripts/summarize_revision_utility_reprobe.py
+slurm/eval_*hardmath*.sbatch
+slurm/eval_*marker*.sbatch
+slurm/*ablation_16k.sbatch
+slurm/reprobe_*.sbatch
+slurm/summarize_*.sbatch
 
 *.log
 *.out
