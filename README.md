@@ -1,6 +1,6 @@
 # RUAR: Utility-Guided Advantage Rescaling
 
-This folder contains the reproduction-facing code for **WhenReflectionHelps:
+This folder contains the reproduction-facing code for **When Reflection Helps:
 Utility-Guided Advantage Rescaling for Efficient Reasoning**.
 
 It keeps the RUAR-specific method code, the DS-7B default training entrypoint,
